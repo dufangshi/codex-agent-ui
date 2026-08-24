@@ -1,0 +1,22 @@
+{
+  "name": "Codex Agent UI",
+  "description": "Codex app-server plus the thread UI iframe for a Treer command Agent.",
+  "source": {
+    "git": "https://github.com/dufangshi/codex-agent-ui.git",
+    "ref": "main"
+  },
+  "requires": ["git", "node", "npm", "codex", "treer", "curl"],
+  "install": ["npm --prefix apps/server install"],
+  "run": {
+    "command": "./scripts/treer-agent.sh",
+    "args": []
+  },
+  "ui": true,
+  "port": 4173,
+  "health": "/api/health",
+  "surface": "/.treer/agent",
+  "ready": {
+    "http": 200,
+    "body": { "ready": true, "ui": true }
+  }
+}

@@ -1,0 +1,5 @@
+node_modules
+.DS_Store
+*.log
+.cache
+# apps/web/dist is tracked so a git clone can start without building thread-ui.

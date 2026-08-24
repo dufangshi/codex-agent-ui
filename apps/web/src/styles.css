@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@source "../../../../codex-thread-ui/packages/thread-ui/src";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: #101722;
+  color: #e8edf2;
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@codex-agent-ui/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@remote-codex/plugin-runtime": "workspace:*",
+    "@remote-codex/plugin-terminal": "workspace:*",
+    "@remote-codex/plugin-xyz-viewer": "workspace:*",
+    "@remote-codex/shared": "workspace:*",
+    "@remote-codex/thread-ui": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.1.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.2"
+  }
+}

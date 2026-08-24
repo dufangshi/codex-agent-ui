@@ -1,0 +1,17 @@
+{
+  "name": "codex-agent-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.1",
+  "description": "Slim Codex thread UI for Treer Agent UI embedding. Does not modify Remote Codex.",
+  "scripts": {
+    "build:thread-ui": "pnpm --filter @remote-codex/shared --filter @remote-codex/plugin-runtime --filter @remote-codex/plugin-terminal --filter @remote-codex/plugin-xyz-viewer --filter @remote-codex/thread-ui build",
+    "build": "pnpm run build:thread-ui && pnpm --filter @codex-agent-ui/web build",
+    "start": "pnpm --filter @codex-agent-ui/server start",
+    "dev": "pnpm --filter @codex-agent-ui/web build && pnpm start"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}

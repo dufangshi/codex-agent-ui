@@ -1,0 +1,3 @@
+packages:
+  - apps/*
+  - ../codex-thread-ui/packages/*
