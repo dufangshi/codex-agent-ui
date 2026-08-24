@@ -62,7 +62,7 @@ rel = os.path.relpath(root, host)
 if rel.startswith("..") or os.path.isabs(rel):
     raise SystemExit("checkout %s is outside host root %s" % (root, host))
 print(rel)
-' "$ROOT" "$WHOAMI")""
+' "$ROOT" "$WHOAMI")"
 
 create_agent() {
   echo "creating command agent $NAME with host-relative cwd $AGENT_CWD"
