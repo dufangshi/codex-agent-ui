@@ -54,18 +54,15 @@ if ! printf '%s' "$WHOAMI" | python3 -c 'import json,sys; json.load(sys.stdin)' 
   exit 1
 fi
 
-AGENT_CWD="$(printf '%s' "$WHOAMI" | python3 - "$ROOT" <<'PY'
-import json, os, sys
-
+AGENT_CWD="$(python3 -c 'import json, os, sys
 root = os.path.abspath(sys.argv[1])
-whoami = json.load(sys.stdin)
+whoami = json.loads(sys.argv[2])
 host = os.path.abspath(whoami["machine"]["root"])
 rel = os.path.relpath(root, host)
 if rel.startswith("..") or os.path.isabs(rel):
-    raise SystemExit(f"checkout {root} is outside host root {host}")
+    raise SystemExit("checkout %s is outside host root %s" % (root, host))
 print(rel)
-PY
-)"
+' "$ROOT" "$WHOAMI")""
 
 create_agent() {
   echo "creating command agent $NAME with host-relative cwd $AGENT_CWD"
@@ -93,14 +90,23 @@ name = sys.argv[1]
 def run(args):
     return subprocess.check_output(args, text=True)
 
+def load_json(raw, label):
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError(f"{label} returned empty output")
+    return json.loads(raw)
+
 def agent_record():
     try:
-        return json.loads(run(["treer", "agent", "show", name]))
+        payload = load_json(run(["treer", "agent", "show", name]), "treer agent show")
     except subprocess.CalledProcessError:
         return None
+    if isinstance(payload, dict) and payload.get("error"):
+        return None
+    return payload
 
 def services():
-    payload = json.loads(run(["treer", "network", "service", "list"]))
+    payload = load_json(run(["treer", "network", "service", "list"]), "treer network service list")
     if isinstance(payload, dict):
         return payload.get("services") or payload.get("items") or []
     return payload if isinstance(payload, list) else []
