@@ -6,13 +6,19 @@ sandbox. Treer only iframes the page.
 
 This is not Treer's `kind=codex` PTY TUI.
 
+One Treer Agent is one Codex thread. Extra conversations are another Agent.
+The start script starts `app-server` plus the frontend only when this process
+cannot already reach a healthy listener of this recipe. If it can, it binds a
+new thread on that shared process and registers this Agent's UI.
+
 ## Recipe
 
 Share this repository URL. An installer Agent (Codex or Claude) reads
 `treer-agent.json` and `skills/install-codex-agent-ui/SKILL.md`, then runs
 `scripts/apply.sh`. That creates a separate command Agent whose start script
 is `scripts/treer-agent.sh`, and saves a workspace launch profile (`Codex Agent
-UI`) so Launch can open another thread without running the installer again.
+UI`) so Launch can create another Agent. Do not install the recipe again for
+another thread.
 
 A clone can start without building thread-ui: `apps/web/dist` is tracked.
 `/.treer/agent` returns HTTP 200 only after `codex app-server` is ready.

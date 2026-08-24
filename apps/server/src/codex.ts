@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { basename } from "node:path";
 
 import { JsonRpcClient } from "./jsonrpc.js";
 import {
@@ -12,6 +13,10 @@ import {
   type ReasoningEffort,
   type TurnDto,
 } from "./map.js";
+import { defaultAgentId } from "./agent-id.js";
+import { inferWorkspaceRoot, resolveThreadCwd, ThreadPathError } from "./path.js";
+
+export { ThreadPathError };
 
 export interface ThreadState {
   id: string;
@@ -27,18 +32,47 @@ export interface ThreadState {
   turns: TurnDto[];
 }
 
+export interface CreateThreadInput {
+  title?: string;
+  cwd?: string;
+  model?: string;
+  reasoningEffort?: string | null;
+}
+
+interface ThreadStartResult {
+  thread: { id: string; name?: string | null; cwd?: string; model?: string };
+  model?: string;
+  reasoningEffort?: unknown;
+  reasoning_effort?: unknown;
+}
+
 export class CodexRuntime extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null;
   private client: JsonRpcClient | null = null;
   private ready = false;
-  thread: ThreadState | null = null;
+  private readonly threads = new Map<string, ThreadState>();
+  private readonly agentThreads = new Map<string, string>();
+  private currentId: string | null = null;
   models: ModelOption[] = [];
+  readonly root: string;
 
   constructor(
     private readonly command: string,
-    private readonly cwd: string,
+    readonly cwd: string,
+    root?: string,
   ) {
     super();
+    this.root = inferWorkspaceRoot(cwd, root);
+  }
+
+  get current(): ThreadState | null {
+    return this.currentId ? this.threads.get(this.currentId) ?? null : null;
+  }
+
+  listThreads() {
+    return [...this.threads.values()].sort((left, right) => {
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    });
   }
 
   async start() {
@@ -88,104 +122,133 @@ export class CodexRuntime extends EventEmitter {
       this.emit("log", `model/list failed: ${error}`);
       return [] as ModelOption[];
     });
+    const thread = await this.createThread({ title: "Codex", cwd: this.cwd });
+    this.agentThreads.set(defaultAgentId(), thread.id);
+  }
 
-    const started = await client.request<{
-      thread: { id: string; name?: string | null; cwd?: string };
-      model?: string;
-      reasoningEffort?: string | null;
-    }>(
+  threadForAgent(agentId: string) {
+    const id = agentId.trim() || defaultAgentId();
+    const threadId = this.agentThreads.get(id);
+    return threadId ? this.threads.get(threadId) ?? null : null;
+  }
+
+  async bindAgent(agentId: string, input: CreateThreadInput = {}) {
+    const id = agentId.trim() || defaultAgentId();
+    const existing = this.threadForAgent(id);
+    if (existing) {
+      this.currentId = existing.id;
+      await this.refresh(existing.id).catch((error) => this.emit("log", `thread refresh skipped: ${error}`));
+      this.emit("state");
+      return existing;
+    }
+    const thread = await this.createThread(input);
+    this.agentThreads.set(id, thread.id);
+    this.emit("state");
+    return thread;
+  }
+
+  async createThread(input: CreateThreadInput = {}) {
+    if (!this.client || !this.ready) {
+      throw new Error("Codex is not ready");
+    }
+    const cwd = resolveThreadCwd(input.cwd, this.cwd, this.root);
+    const model = this.resolveModel(input.model);
+    const reasoningEffort = this.resolveEffort(model, input.reasoningEffort);
+    const started = await this.client.request<ThreadStartResult>(
       "thread/start",
       {
-        cwd: this.cwd,
+        cwd,
         approvalPolicy: "never",
         sandbox: "workspace-write",
         experimentalRawEvents: false,
         persistExtendedHistory: true,
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { effort: reasoningEffort } : {}),
       },
       60_000,
     );
-    const now = new Date().toISOString();
-    const model = started.model ?? (started.thread as { model?: string }).model ?? null;
-    const reasoningEffort = mapReasoningEffort(
-      started.reasoningEffort ?? (started as { reasoning_effort?: unknown }).reasoning_effort,
-    );
-    this.thread = {
-      id: started.thread.id,
-      title: started.thread.name?.trim() || "Codex",
-      cwd: started.thread.cwd || this.cwd,
-      model,
-      reasoningEffort,
-      status: "idle",
-      activeTurnId: null,
-      lastError: null,
-      createdAt: now,
-      updatedAt: now,
-      turns: [],
-    };
+    const thread = this.threadFromStart(started, input.title, cwd);
+    this.remember(thread);
+    this.currentId = thread.id;
     if (this.models.length === 0) {
-      this.models = fallbackModelOption(model, reasoningEffort);
+      this.models = fallbackModelOption(thread.model, thread.reasoningEffort);
     }
-    this.applyModelDefaults();
-    await this.refresh().catch((error) => this.emit("log", `initial refresh skipped: ${error}`));
+    this.applyModelDefaults(thread.id);
+    await this.refresh(thread.id).catch((error) => this.emit("log", `thread refresh skipped: ${error}`));
     this.emit("state");
+    return this.requireThread(thread.id);
   }
 
-  async prompt(text: string) {
-    if (!this.client || !this.thread) {
+  async selectThread(threadId: string) {
+    if (!this.client || !this.ready) {
+      throw new Error("Codex is not ready");
+    }
+    const id = threadId.trim();
+    if (!id) {
+      throw new Error("threadId is required");
+    }
+    if (!this.threads.has(id)) {
+      throw new Error(`unknown thread: ${id}`);
+    }
+    this.currentId = id;
+    await this.refresh(id);
+    this.emit("state");
+    return this.requireThread(id);
+  }
+
+  async prompt(text: string, threadId?: string) {
+    const thread = threadId ? this.requireThread(threadId) : this.current;
+    if (!this.client || !thread) {
       throw new Error("Codex is not ready");
     }
     const turn = await this.client.request<{ turn: { id: string } }>(
       "turn/start",
       {
-        threadId: this.thread.id,
+        threadId: thread.id,
         input: [{ type: "text", text, text_elements: [] }],
-        ...(this.thread.model ? { model: this.thread.model } : {}),
-        ...(this.thread.reasoningEffort ? { effort: this.thread.reasoningEffort } : {}),
+        ...(thread.model ? { model: thread.model } : {}),
+        ...(thread.reasoningEffort ? { effort: thread.reasoningEffort } : {}),
       },
       60_000,
     );
-    this.thread.status = "running";
-    this.thread.activeTurnId = turn.turn.id;
-    this.thread.updatedAt = new Date().toISOString();
+    this.remember({
+      ...thread,
+      status: "running",
+      activeTurnId: turn.turn.id,
+      updatedAt: new Date().toISOString(),
+    });
     this.emit("state");
-    await this.refresh();
+    await this.refresh(thread.id);
   }
 
-  async interrupt() {
-    if (!this.client || !this.thread?.activeTurnId) {
+  async interrupt(threadId?: string) {
+    const thread = threadId ? this.requireThread(threadId) : this.current;
+    if (!this.client || !thread?.activeTurnId) {
       return;
     }
     await this.client.request("turn/interrupt", {
-      threadId: this.thread.id,
-      turnId: this.thread.activeTurnId,
+      threadId: thread.id,
+      turnId: thread.activeTurnId,
     });
-    await this.refresh();
+    await this.refresh(thread.id);
   }
 
-  async updateSettings(input: { model?: string; reasoningEffort?: string | null }) {
-    if (!this.thread) {
+  async updateSettings(input: { model?: string; reasoningEffort?: string | null }, threadId?: string) {
+    const thread = threadId ? this.requireThread(threadId) : this.current;
+    if (!thread) {
       throw new Error("Codex is not ready");
     }
-    const nextModel = typeof input.model === "string" && input.model.trim() ? input.model.trim() : this.thread.model;
-    const option = this.models.find((entry) => entry.model === nextModel) ?? null;
-    let nextEffort = input.reasoningEffort === undefined
-      ? this.thread.reasoningEffort
-      : mapReasoningEffort(input.reasoningEffort);
-    if (option) {
-      const supported = option.supportedReasoningEfforts.map((entry) => entry.reasoningEffort);
-      if (nextEffort && supported.length > 0 && !supported.includes(nextEffort)) {
-        nextEffort = option.defaultReasoningEffort;
-      }
-      if (!nextEffort) {
-        nextEffort = option.defaultReasoningEffort;
-      }
-    }
-    this.thread = {
-      ...this.thread,
+    const nextModel =
+      typeof input.model === "string" && input.model.trim() ? input.model.trim() : thread.model;
+    const nextEffort =
+      input.reasoningEffort === undefined ? thread.reasoningEffort : mapReasoningEffort(input.reasoningEffort);
+    this.remember({
+      ...thread,
       model: nextModel,
-      reasoningEffort: nextEffort,
+      reasoningEffort: this.resolveEffort(nextModel, nextEffort),
       updatedAt: new Date().toISOString(),
-    };
+    });
+    this.applyModelDefaults(thread.id);
     this.emit("state");
   }
 
@@ -200,9 +263,69 @@ export class CodexRuntime extends EventEmitter {
   snapshot() {
     return {
       ready: this.ready,
-      thread: this.thread,
+      cwd: this.cwd,
+      root: this.root,
+      currentId: this.currentId,
+      thread: this.current,
+      threads: this.listThreads(),
       models: this.models,
     };
+  }
+
+  private remember(thread: ThreadState) {
+    this.threads.set(thread.id, thread);
+  }
+
+  private requireThread(threadId: string) {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      throw new Error(`unknown thread: ${threadId}`);
+    }
+    return thread;
+  }
+
+  private threadFromStart(started: ThreadStartResult, title: string | undefined, cwd: string): ThreadState {
+    const now = new Date().toISOString();
+    const model = started.model ?? started.thread.model ?? null;
+    const reasoningEffort = mapReasoningEffort(started.reasoningEffort ?? started.reasoning_effort);
+    const requestedTitle = title?.trim();
+    return {
+      id: started.thread.id,
+      title: requestedTitle || started.thread.name?.trim() || basename(started.thread.cwd || cwd) || "Codex",
+      cwd: started.thread.cwd || cwd,
+      model,
+      reasoningEffort,
+      status: "idle",
+      activeTurnId: null,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+      turns: [],
+    };
+  }
+
+  private resolveModel(requested?: string) {
+    const model = requested?.trim();
+    if (!model) {
+      return this.models.find((entry) => entry.isDefault)?.model ?? this.models[0]?.model ?? null;
+    }
+    if (this.models.length > 0 && !this.models.some((entry) => entry.model === model)) {
+      throw new Error(`unknown model: ${model}`);
+    }
+    return model;
+  }
+
+  private resolveEffort(model: string | null, requested?: string | null) {
+    const option = this.models.find((entry) => entry.model === model) ?? null;
+    let nextEffort = requested === undefined ? null : mapReasoningEffort(requested);
+    if (!option) {
+      return nextEffort;
+    }
+    const supported = option.supportedReasoningEfforts.map((entry) => entry.reasoningEffort);
+    if (nextEffort && supported.length > 0 && !supported.includes(nextEffort)) {
+      nextEffort = option.defaultReasoningEffort;
+    }
+    return nextEffort ?? option.defaultReasoningEffort;
   }
 
   private async loadModels() {
@@ -233,37 +356,37 @@ export class CodexRuntime extends EventEmitter {
     return models;
   }
 
-  private applyModelDefaults() {
-    if (!this.thread) {
+  private applyModelDefaults(threadId: string) {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
       return;
     }
     const option =
-      this.models.find((entry) => entry.model === this.thread?.model) ??
+      this.models.find((entry) => entry.model === thread.model) ??
       this.models.find((entry) => entry.isDefault) ??
       this.models[0] ??
       null;
     if (!option) {
       return;
     }
-    const supported = option.supportedReasoningEfforts.map((entry) => entry.reasoningEffort);
-    const reasoningEffort =
-      this.thread.reasoningEffort && supported.includes(this.thread.reasoningEffort)
-        ? this.thread.reasoningEffort
-        : option.defaultReasoningEffort;
-    this.thread = {
-      ...this.thread,
-      model: this.thread.model ?? option.model,
-      reasoningEffort,
-    };
+    this.remember({
+      ...thread,
+      model: thread.model ?? option.model,
+      reasoningEffort: this.resolveEffort(thread.model ?? option.model, thread.reasoningEffort),
+    });
   }
 
-  private async refresh() {
-    if (!this.client || !this.thread) {
+  private async refresh(threadId = this.currentId) {
+    if (!this.client || !threadId) {
+      return;
+    }
+    const existing = this.threads.get(threadId);
+    if (!existing) {
       return;
     }
     try {
       const response = await this.client.request<{ thread: Record<string, unknown> }>("thread/read", {
-        threadId: this.thread.id,
+        threadId,
         includeTurns: true,
       });
       const record = response.thread as {
@@ -272,24 +395,21 @@ export class CodexRuntime extends EventEmitter {
         cwd?: string;
         status?: { type?: string; activeFlags?: string[] };
         turns?: Array<Record<string, unknown>>;
-        preview?: string;
       };
       const turns = Array.isArray(record.turns) ? record.turns.map((turn) => mapTurn(turn)) : [];
       const active = turns.find((turn) => turn.status === "inProgress");
       const statusType = record.status && typeof record.status === "object" ? record.status.type : null;
-      this.thread = {
-        ...this.thread,
-        id: record.id ?? this.thread.id,
-        title: record.name?.trim() || this.thread.title,
-        cwd: record.cwd || this.thread.cwd,
-        model: this.thread.model,
-        reasoningEffort: this.thread.reasoningEffort,
+      this.remember({
+        ...existing,
+        id: record.id ?? existing.id,
+        title: record.name?.trim() || existing.title,
+        cwd: record.cwd || existing.cwd,
         status: statusType === "active" || active ? "running" : statusType === "systemError" ? "error" : "idle",
         activeTurnId: active?.id ?? null,
         lastError: turns.find((turn) => turn.error)?.error ?? null,
         updatedAt: new Date().toISOString(),
         turns,
-      };
+      });
       this.emit("state");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -304,16 +424,37 @@ export class CodexRuntime extends EventEmitter {
   private async onNotification(event: { method?: string; params?: Record<string, unknown> }) {
     const method = event.method ?? "";
     if (
-      method.startsWith("turn/") ||
-      method.startsWith("item/") ||
-      method.startsWith("thread/") ||
-      method === "error"
+      !(
+        method.startsWith("turn/") ||
+        method.startsWith("item/") ||
+        method.startsWith("thread/") ||
+        method === "error"
+      )
     ) {
-      try {
-        await this.refresh();
-      } catch (error) {
-        this.emit("log", `refresh failed: ${error}`);
-      }
+      return;
+    }
+    const threadId = eventThreadId(event.params) ?? this.currentId;
+    try {
+      await this.refresh(threadId);
+    } catch (error) {
+      this.emit("log", `refresh failed: ${error}`);
     }
   }
+}
+
+function eventThreadId(params?: Record<string, unknown>) {
+  if (!params) {
+    return null;
+  }
+  if (typeof params.threadId === "string" && params.threadId.trim()) {
+    return params.threadId;
+  }
+  if (typeof params.thread_id === "string" && params.thread_id.trim()) {
+    return params.thread_id;
+  }
+  const thread = params.thread;
+  if (thread && typeof thread === "object" && typeof (thread as { id?: unknown }).id === "string") {
+    return (thread as { id: string }).id;
+  }
+  return null;
 }

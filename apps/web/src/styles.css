@@ -13,3 +13,16 @@ body {
   background: #101722;
   color: #e8edf2;
 }
+
+/* One Treer Agent is one thread. Do not surface the rooms rail. */
+.thread-ui-shell .thread-rooms-rail,
+.thread-ui-shell .thread-mobile-scrim,
+.thread-ui-shell [aria-label="Open rooms"],
+.thread-ui-shell [title="New Chat"] {
+  display: none !important;
+}
+
+.thread-ui-shell .thread-shell-frame,
+.thread-ui-shell .thread-shell-frame.is-rail-hidden {
+  grid-template-columns: minmax(0, 1fr) !important;
+}

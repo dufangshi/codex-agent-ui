@@ -44,7 +44,10 @@ If this checkout already contains `scripts/apply.sh`, skip clone and run:
 `apply.sh` installs isolated server dependencies, upserts a Launch profile
 from `treer-agent.json`, creates the first command Agent with a Host-relative
 `--cwd`, and waits until `/.treer/agent` is reachable through the registered
-service. Later threads use that Launch option; do not run this installer again.
+service. Each Treer Agent is one thread. Extra conversations use Launch to
+create another Agent. If that Agent can reach an already healthy listener of
+this recipe, it binds a thread there instead of starting another app-server
+and frontend. Do not run this installer again for another thread.
 
 ## Success
 

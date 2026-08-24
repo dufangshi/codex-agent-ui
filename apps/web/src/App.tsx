@@ -19,6 +19,8 @@ import { api, connectEvents } from "./api";
 
 interface StatePayload {
   ready: boolean;
+  cwd?: string;
+  root?: string;
   status: AgentRuntimeStatusDto;
   threads: ThreadDto[];
   detail: ThreadDetailDto | null;
@@ -26,7 +28,7 @@ interface StatePayload {
 }
 
 const capabilities: AgentProviderCapabilitiesDto = {
-  sessions: { list: true, read: true, resume: false, importLocal: false },
+  sessions: { list: false, read: true, resume: false, importLocal: false },
   turns: { start: true, streamInput: false, steer: false, interrupt: true, compact: false },
   branching: { fork: false, hardRollback: false, resumeAt: false, rewindFiles: false },
   controls: {
@@ -133,7 +135,7 @@ export function App() {
 
   const adapter = useMemo<ThreadDetailUiAdapter>(
     () => ({
-      openThread() {},
+      openThread: () => {},
       sendPrompt,
       interrupt,
       updateSettings,
@@ -169,6 +171,7 @@ export function App() {
     <AppShellNavContext.Provider value={nav}>
       <PluginProvider builtinPlugins={[]}>
         <ThreadDetailSurface
+          hideRoomsRail
           threads={state?.threads ?? []}
           detail={detail}
           loading={!state}
@@ -180,6 +183,11 @@ export function App() {
           currentWorkspaceId={detail?.workspace.id}
           currentWorkspaceLabel={detail?.workspace.label ?? "Codex"}
           activeView="chat"
+          emptyContent={
+            <div className="flex flex-1 items-center justify-center px-6 py-12 text-center text-[var(--theme-fg-muted)]">
+              Starting Codex…
+            </div>
+          }
           workspaceFeatures={{
             workspace: false,
             toolUsage: false,

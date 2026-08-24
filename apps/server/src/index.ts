@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { WebSocketServer } from "ws";
 
-import { CodexRuntime } from "./codex.js";
+import { defaultAgentId, resolveAgentId } from "./agent-id.js";
+import { CodexRuntime, ThreadPathError, type ThreadState } from "./codex.js";
 
 const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const webDist = process.env.CODEX_AGENT_UI_WEB_DIST || join(root, "apps/web/dist");
@@ -13,8 +14,22 @@ const port = Number(process.env.CODEX_AGENT_UI_PORT || process.argv.find((arg) =
 const cwd = resolve(process.env.CODEX_AGENT_UI_CWD || process.cwd());
 const command = process.env.CODEX_BIN || "codex";
 
-const runtime = new CodexRuntime(command, cwd);
-const sockets = new Set<{ send: (data: string) => void }>();
+const runtime = new CodexRuntime(command, cwd, process.env.CODEX_AGENT_UI_ROOT);
+const sockets = new Set<{ agentId: string; send: (data: string) => void }>();
+
+function requestUrl(request: IncomingMessage) {
+  return new URL(request.url ?? "/", "http://127.0.0.1");
+}
+
+function agentIdFromRequest(request: IncomingMessage, body?: Record<string, unknown>) {
+  const url = requestUrl(request);
+  return resolveAgentId({
+    query: url.searchParams.get("agent"),
+    header: typeof request.headers["x-treer-agent-id"] === "string" ? request.headers["x-treer-agent-id"] : null,
+    body: typeof body?.agentId === "string" ? body.agentId : null,
+    fallback: defaultAgentId(),
+  });
+}
 
 function mime(file: string) {
   switch (extname(file)) {
@@ -76,78 +91,102 @@ async function readJson(request: IncomingMessage) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
 }
 
-function statePayload() {
+function toThreadDto(thread: ThreadState) {
+  return {
+    id: thread.id,
+    workspaceId: "local",
+    provider: "codex",
+    providerSessionId: thread.id,
+    source: "supervisor",
+    title: thread.title,
+    model: thread.model,
+    reasoningEffort: thread.reasoningEffort,
+    fastMode: false,
+    collaborationMode: "default",
+    approvalMode: "yolo",
+    sandboxMode: "workspace-write",
+    status: thread.status === "running" ? "running" : thread.status === "error" ? "error" : "idle",
+    summaryText: null,
+    lastError: thread.lastError,
+    activeTurnId: thread.activeTurnId,
+    isLoaded: true,
+    isPinned: false,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    lastTurnStartedAt: thread.turns.at(-1)?.startedAt ?? null,
+    lastTurnCompletedAt: null,
+  };
+}
+
+function statePayload(agentId = defaultAgentId()) {
   const snapshot = runtime.snapshot();
-  const thread = snapshot.thread;
-  const now = thread?.updatedAt ?? new Date().toISOString();
-  const dto = thread
-    ? {
-        id: thread.id,
-        workspaceId: "local",
-        provider: "codex",
-        providerSessionId: thread.id,
-        source: "supervisor",
-        title: thread.title,
-        model: thread.model,
-        reasoningEffort: thread.reasoningEffort,
-        fastMode: false,
-        collaborationMode: "default",
-        approvalMode: "yolo",
-        sandboxMode: "workspace-write",
-        status: thread.status === "running" ? "running" : thread.status === "error" ? "error" : "idle",
-        summaryText: null,
-        lastError: thread.lastError,
-        activeTurnId: thread.activeTurnId,
-        isLoaded: true,
-        isPinned: false,
-        createdAt: thread.createdAt,
-        updatedAt: thread.updatedAt,
-        lastTurnStartedAt: thread.turns.at(-1)?.startedAt ?? null,
-        lastTurnCompletedAt: null,
-      }
-    : null;
+  const current = runtime.threadForAgent(agentId) ?? snapshot.thread;
+  const now = current?.updatedAt ?? new Date().toISOString();
+  const dto = current ? toThreadDto(current) : null;
   return {
     ready: snapshot.ready,
+    cwd: snapshot.cwd,
+    root: snapshot.root,
+    agentId,
     status: {
       state: snapshot.ready ? "ready" : "starting",
       transport: "stdio",
       lastStartedAt: now,
-      lastError: thread?.lastError ?? null,
+      lastError: current?.lastError ?? null,
       restartCount: 0,
     },
     modelOptions: snapshot.models,
-    threads: dto ? [dto] : [],
-    detail: dto && thread
+    threads: current ? [toThreadDto(current)] : [],
+    detail: dto && current
       ? {
           thread: dto,
           workspace: {
             id: "local",
             hostId: "local",
-            label: thread.cwd,
-            absPath: thread.cwd,
+            label: current.cwd,
+            absPath: current.cwd,
             isFavorite: false,
-            createdAt: thread.createdAt,
-            lastOpenedAt: thread.updatedAt,
+            createdAt: current.createdAt,
+            lastOpenedAt: current.updatedAt,
           },
           workspacePathStatus: "present",
-          totalTurnCount: thread.turns.length,
+          totalTurnCount: current.turns.length,
           pendingRequests: [],
           pendingSteers: [],
-          turns: thread.turns,
+          turns: current.turns,
         }
       : null,
   };
 }
 
 function broadcast() {
-  const encoded = JSON.stringify({ type: "state", ...statePayload() });
   for (const socket of sockets) {
     try {
-      socket.send(encoded);
+      socket.send(JSON.stringify({ type: "state", ...statePayload(socket.agentId) }));
     } catch {
       sockets.delete(socket);
     }
   }
+}
+
+async function threadForRequest(agentId: string) {
+  return runtime.threadForAgent(agentId) ?? runtime.bindAgent(agentId);
+}
+
+function clientErrorStatus(error: unknown) {
+  if (error instanceof ThreadPathError) {
+    return 400;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.startsWith("unknown model:") ||
+    message.startsWith("unknown thread:") ||
+    message === "threadId is required" ||
+    message === "prompt is required"
+  ) {
+    return 400;
+  }
+  return 500;
 }
 
 runtime.on("state", broadcast);
@@ -177,27 +216,47 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (path === "/api/state" && method === "GET") {
-      send(response, 200, statePayload());
+      const agentId = agentIdFromRequest(request);
+      send(response, 200, statePayload(agentId));
+      return;
+    }
+    if (path === "/api/agents/bind" && method === "POST") {
+      const body = await readJson(request);
+      const agentId = agentIdFromRequest(request, body);
+      await runtime.bindAgent(agentId, {
+        title: typeof body.title === "string" ? body.title : undefined,
+        cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+        model: typeof body.model === "string" ? body.model : undefined,
+      });
+      send(response, 200, statePayload(agentId));
       return;
     }
     if (path === "/api/prompt" && method === "POST") {
       const body = await readJson(request);
+      const agentId = agentIdFromRequest(request, body);
       const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
       if (!prompt) {
         send(response, 400, { error: "prompt is required" });
         return;
       }
-      await runtime.prompt(prompt);
-      send(response, 200, statePayload());
+      const thread = await threadForRequest(agentId);
+      await runtime.prompt(prompt, thread.id);
+      send(response, 200, statePayload(agentId));
       return;
     }
     if (path === "/api/interrupt" && method === "POST") {
-      await runtime.interrupt();
-      send(response, 200, statePayload());
+      const agentId = agentIdFromRequest(request);
+      const thread = runtime.threadForAgent(agentId);
+      if (thread) {
+        await runtime.interrupt(thread.id);
+      }
+      send(response, 200, statePayload(agentId));
       return;
     }
     if (path === "/api/settings" && method === "POST") {
       const body = await readJson(request);
+      const agentId = agentIdFromRequest(request, body);
+      const thread = await threadForRequest(agentId);
       await runtime.updateSettings({
         model: typeof body.model === "string" ? body.model : undefined,
         reasoningEffort:
@@ -206,8 +265,8 @@ const server = createServer(async (request, response) => {
             : typeof body.reasoningEffort === "string" || body.reasoningEffort === null
               ? body.reasoningEffort
               : undefined,
-      });
-      send(response, 200, statePayload());
+      }, thread.id);
+      send(response, 200, statePayload(agentId));
       return;
     }
 
@@ -222,7 +281,7 @@ const server = createServer(async (request, response) => {
     send(response, 404, { error: "not found" });
   } catch (error) {
     console.error(error);
-    send(response, 500, { error: error instanceof Error ? error.message : String(error) });
+    send(response, clientErrorStatus(error), { error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -234,10 +293,21 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
   socketsServer.handleUpgrade(request, socket, head, (ws) => {
-    sockets.add(ws);
-    ws.send(JSON.stringify({ type: "state", ...statePayload() }));
-    ws.on("close", () => sockets.delete(ws));
+    const agentId = agentIdFromRequest(request);
+    const client = { agentId, send: (data: string) => ws.send(data) };
+    sockets.add(client);
+    ws.send(JSON.stringify({ type: "state", ...statePayload(agentId) }));
+    ws.on("close", () => sockets.delete(client));
   });
+});
+
+server.on("error", (error) => {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EADDRINUSE") {
+    console.error(`port ${port} is already in use; attach to the existing Codex Agent UI instead`);
+    process.exit(75);
+  }
+  throw error;
 });
 
 server.listen(port, "127.0.0.1", () => {

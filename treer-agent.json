@@ -1,6 +1,6 @@
 {
   "name": "Codex Agent UI",
-  "description": "Codex app-server plus the thread UI iframe for a Treer command Agent.",
+  "description": "One Treer Agent, one Codex thread. Shares app-server when a same-type listener is already reachable.",
   "source": {
     "git": "https://github.com/dufangshi/codex-agent-ui.git",
     "ref": "main"
