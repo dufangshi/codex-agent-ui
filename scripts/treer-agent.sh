@@ -28,15 +28,11 @@ start_server() {
     return
   fi
   cd "$ROOT/apps/server"
-  if [ -x "$ROOT/apps/server/node_modules/.bin/tsx" ]; then
-    "$ROOT/apps/server/node_modules/.bin/tsx" src/index.ts
-    return
+  if [ ! -x "$ROOT/apps/server/node_modules/.bin/tsx" ] || [ ! -f "$ROOT/apps/server/node_modules/ws/package.json" ]; then
+    echo "server dependencies missing; run scripts/apply.sh first" >&2
+    exit 1
   fi
-  if [ -x "$ROOT/node_modules/.bin/tsx" ]; then
-    "$ROOT/node_modules/.bin/tsx" src/index.ts
-    return
-  fi
-  npx --yes tsx src/index.ts
+  "$ROOT/apps/server/node_modules/.bin/tsx" src/index.ts
 }
 
 # Always start inside this Agent process. Reusing a host listener would

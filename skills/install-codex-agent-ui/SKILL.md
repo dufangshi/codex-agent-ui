@@ -41,8 +41,9 @@ If this checkout already contains `scripts/apply.sh`, skip clone and run:
 ./scripts/apply.sh --name "${TREER_RECIPE_AGENT_NAME:-codex-ui}"
 ```
 
-`apply.sh` installs Node dependencies, creates the command Agent, and waits
-until `/.treer/agent` is reachable through the registered service.
+`apply.sh` installs isolated server dependencies, creates the command Agent
+with a Host-relative `--cwd`, and waits until `/.treer/agent` is reachable
+through the registered service.
 
 ## Success
 

@@ -38,7 +38,14 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 echo "installing server dependencies in $ROOT/apps/server"
-npm --prefix "$ROOT/apps/server" install
+# Isolate from the parent pnpm workspace. A workspace-hoisted lockfile
+# produces broken ../../node_modules/.pnpm symlinks after a git clone.
+rm -rf "$ROOT/apps/server/node_modules"
+npm --prefix "$ROOT/apps/server" install --install-strategy=nested --no-workspaces
+if [ ! -f "$ROOT/apps/server/node_modules/ws/package.json" ] || [ ! -x "$ROOT/apps/server/node_modules/.bin/tsx" ]; then
+  echo "server dependencies did not install into $ROOT/apps/server/node_modules" >&2
+  exit 1
+fi
 
 WHOAMI="$(treer whoami)"
 echo "$WHOAMI"
@@ -47,11 +54,35 @@ if ! printf '%s' "$WHOAMI" | python3 -c 'import json,sys; json.load(sys.stdin)' 
   exit 1
 fi
 
+AGENT_CWD="$(printf '%s' "$WHOAMI" | python3 - "$ROOT" <<'PY'
+import json, os, sys
+
+root = os.path.abspath(sys.argv[1])
+whoami = json.load(sys.stdin)
+host = os.path.abspath(whoami["machine"]["root"])
+rel = os.path.relpath(root, host)
+if rel.startswith("..") or os.path.isabs(rel):
+    raise SystemExit(f"checkout {root} is outside host root {host}")
+print(rel)
+PY
+)"
+
+create_agent() {
+  echo "creating command agent $NAME with host-relative cwd $AGENT_CWD"
+  treer agent admin create --machine self --kind command --name "$NAME" --cwd "$AGENT_CWD" -- ./scripts/treer-agent.sh
+}
+
 if treer agent show "$NAME" >/dev/null 2>&1; then
-  echo "agent $NAME already exists; waiting for readiness"
+  STATUS="$(treer agent show "$NAME" | python3 -c 'import json,sys; rec=json.load(sys.stdin); rec=rec.get("agent", rec); print(rec.get("status") or "")')"
+  if [ "$STATUS" = "failed" ] || [ "$STATUS" = "exited" ]; then
+    echo "agent $NAME is $STATUS; recreating"
+    treer agent admin delete "$NAME"
+    create_agent
+  else
+    echo "agent $NAME already exists ($STATUS); waiting for readiness"
+  fi
 else
-  echo "creating command agent $NAME"
-  treer agent admin create --machine self --kind command --name "$NAME" --cwd "$ROOT" -- "$ROOT/scripts/treer-agent.sh"
+  create_agent
 fi
 
 python3 - "$NAME" <<'PY'
@@ -84,7 +115,7 @@ def service_for_agent(agent_id):
             matches.append(service)
     return matches
 
-deadline = time.time() + 180
+deadline = time.time() + 300
 last = ""
 while time.time() < deadline:
     agent = agent_record()
