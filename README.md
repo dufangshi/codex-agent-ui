@@ -11,7 +11,8 @@ This is not Treer's `kind=codex` PTY TUI.
 Share this repository URL. An installer Agent (Codex or Claude) reads
 `treer-agent.json` and `skills/install-codex-agent-ui/SKILL.md`, then runs
 `scripts/apply.sh`. That creates a separate command Agent whose start script
-is `scripts/treer-agent.sh`.
+is `scripts/treer-agent.sh`, and saves a workspace launch profile (`Codex Agent
+UI`) so Launch can open another thread without running the installer again.
 
 A clone can start without building thread-ui: `apps/web/dist` is tracked.
 `/.treer/agent` returns HTTP 200 only after `codex app-server` is ready.

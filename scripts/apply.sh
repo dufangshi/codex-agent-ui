@@ -64,6 +64,73 @@ if rel.startswith("..") or os.path.isabs(rel):
 print(rel)
 ' "$ROOT" "$WHOAMI")"
 
+echo "saving launch profile from $ROOT/treer-agent.json with cwd $AGENT_CWD"
+python3 - "$ROOT/treer-agent.json" "$AGENT_CWD" <<'PY'
+import json, subprocess, sys
+
+meta = json.load(open(sys.argv[1]))
+cwd = sys.argv[2]
+name = (meta.get("name") or "").strip() or "recipe"
+description = meta.get("description") or ""
+run = meta.get("run") if isinstance(meta.get("run"), dict) else {}
+command = (run.get("command") or "./scripts/treer-agent.sh").strip()
+args = run.get("args") or []
+if not command:
+    raise SystemExit("treer-agent.json run.command is empty")
+if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
+    raise SystemExit("treer-agent.json run.args must be an array of strings")
+
+def run_treer(argv):
+    print("+", " ".join(argv), flush=True)
+    subprocess.check_call(argv)
+
+exists = subprocess.run(
+    ["treer", "agent", "admin", "profile", "show", name],
+    capture_output=True,
+    text=True,
+)
+if exists.returncode == 0:
+    update = [
+        "treer",
+        "agent",
+        "admin",
+        "profile",
+        "update",
+        name,
+        "--description",
+        description,
+        "--cwd",
+        cwd,
+        "--command",
+        command,
+    ]
+    if args:
+        for item in args:
+            update.extend(["--arg", item])
+    else:
+        update.append("--clear-args")
+    run_treer(update)
+else:
+    create = [
+        "treer",
+        "agent",
+        "admin",
+        "profile",
+        "create",
+        name,
+        "--description",
+        description,
+        "--cwd",
+        cwd,
+        command,
+    ]
+    if args:
+        create.append("--")
+        create.extend(args)
+    run_treer(create)
+print(json.dumps({"ok": True, "profile": name, "cwd": cwd, "command": command, "args": args}))
+PY
+
 create_agent() {
   echo "creating command agent $NAME with host-relative cwd $AGENT_CWD"
   treer agent admin create --machine self --kind command --name "$NAME" --cwd "$AGENT_CWD" -- ./scripts/treer-agent.sh

@@ -41,9 +41,10 @@ If this checkout already contains `scripts/apply.sh`, skip clone and run:
 ./scripts/apply.sh --name "${TREER_RECIPE_AGENT_NAME:-codex-ui}"
 ```
 
-`apply.sh` installs isolated server dependencies, creates the command Agent
-with a Host-relative `--cwd`, and waits until `/.treer/agent` is reachable
-through the registered service.
+`apply.sh` installs isolated server dependencies, upserts a Launch profile
+from `treer-agent.json`, creates the first command Agent with a Host-relative
+`--cwd`, and waits until `/.treer/agent` is reachable through the registered
+service. Later threads use that Launch option; do not run this installer again.
 
 ## Success
 
@@ -52,6 +53,7 @@ Stop only when all of these are true:
 1. `treer agent show <name>` exists and is not `failed` or `exited`.
 2. `treer network service list` shows an Agent-scoped HTTP service for that Agent.
 3. `treer status` includes an `agent_uis` entry for that Agent.
+4. `treer agent admin profile show` returns the name from `treer-agent.json`.
 
 The installer cannot probe another Agent's service (`service_not_owned`).
 Readiness for operators is `GET /.treer/agent` through the Agent UI
