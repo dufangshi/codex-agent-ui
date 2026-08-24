@@ -105,6 +105,9 @@ def agent_record():
         return None
     return payload
 
+def status_snapshot():
+    return load_json(run(["treer", "status"]), "treer status")
+
 def services():
     payload = load_json(run(["treer", "network", "service", "list"]), "treer network service list")
     if isinstance(payload, dict):
@@ -135,19 +138,16 @@ while time.time() < deadline:
     if status in {"failed", "exited"}:
         raise SystemExit(f"agent {name} entered {status}")
     matches = service_for_agent(agent_id) if agent_id else []
-    for service in matches:
-        service_name = service.get("name") or service.get("service_id")
-        try:
-            probe = json.loads(run(["treer", "network", "service", "probe", service_name]))
-        except subprocess.CalledProcessError as error:
-            last = f"probe failed: {error}"
-            continue
-        if probe.get("healthy") is True:
-            print(json.dumps({"ok": True, "agent": record, "service": service, "probe": probe}, indent=2))
-            raise SystemExit(0)
-        last = f"service {service_name} not healthy: {probe}"
+    snapshot = status_snapshot()
+    uis = snapshot.get("agent_uis") or []
+    ui = next((item for item in uis if isinstance(item, dict) and item.get("agent_id") == agent_id), None)
+    if ui and matches:
+        print(json.dumps({"ok": True, "agent": record, "service": matches[0], "ui": ui}, indent=2))
+        raise SystemExit(0)
     if not matches:
         last = f"agent {name} status={status} has no Agent-scoped HTTP service yet"
+    elif not ui:
+        last = f"agent {name} has a service but no agent_uis entry yet"
     time.sleep(2)
 
 raise SystemExit(f"timed out waiting for {name} UI readiness: {last}")

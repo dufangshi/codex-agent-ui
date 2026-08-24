@@ -51,7 +51,11 @@ Stop only when all of these are true:
 
 1. `treer agent show <name>` exists and is not `failed` or `exited`.
 2. `treer network service list` shows an Agent-scoped HTTP service for that Agent.
-3. `treer network service probe <service>` reports `healthy: true`.
+3. `treer status` includes an `agent_uis` entry for that Agent.
+
+The installer cannot probe another Agent's service (`service_not_owned`).
+Readiness for operators is `GET /.treer/agent` through the Agent UI
+proxy: HTTP 200 and `ready: true`.
 
 Do not put secrets in a launch profile. Do not use `--publish`. The start script
 registers `--agent self` and `treer ui set` itself.
