@@ -39,4 +39,6 @@ CODEX_AGENT_UI_CWD="$PWD" pnpm start
 
 Listens on `127.0.0.1:4173`. Pages use relative `api/` and `ws` URLs plus
 `<base href="./">` so Treer can iframe them under
-`/api/workspaces/.../agents/.../ui/proxy/`.
+`/api/workspaces/.../agents/.../interface/ui/`. The start script registers
+that page with `treer interface register --ui-path /`. `ui_path` is the HTTP
+path on the Agent's private loopback server (`/`), not a git URL.

@@ -43,8 +43,8 @@ If this checkout already contains `scripts/apply.sh`, skip clone and run:
 
 `apply.sh` installs isolated server dependencies, upserts a Launch profile
 from `treer-agent.json`, creates the first command Agent with a Host-relative
-`--cwd`, and waits until `/.treer/agent` is reachable through the registered
-service. Each Treer Agent is one thread. Extra conversations use Launch to
+`--cwd`, and waits until that Agent's Interface descriptor includes `ui_path`.
+Each Treer Agent is one thread. Extra conversations use Launch to
 create another Agent. If that Agent can reach an already healthy listener of
 this recipe, it binds a thread there instead of starting another app-server
 and frontend. Do not run this installer again for another thread.
@@ -54,13 +54,13 @@ and frontend. Do not run this installer again for another thread.
 Stop only when all of these are true:
 
 1. `treer agent show <name>` exists and is not `failed` or `exited`.
-2. `treer network service list` shows an Agent-scoped HTTP service for that Agent.
-3. `treer status` includes an `agent_uis` entry for that Agent.
+2. That Agent's `interface.protocol` is `treer.agent-interface/v1`.
+3. That Agent's `interface.ui_path` is `/`.
 4. `treer agent admin profile show` returns the name from `treer-agent.json`.
 
 The installer cannot probe another Agent's service (`service_not_owned`).
-Readiness for operators is `GET /.treer/agent` through the Agent UI
-proxy: HTTP 200 and `ready: true`.
+Readiness for operators is `treer agent show <name>` with `interface.ui_path`,
+and the control plane iframe at `/interface/ui/`.
 
 Do not put secrets in a launch profile. Do not use `--publish`. The start script
-registers `--agent self` and `treer ui set` itself.
+registers `treer interface register --ui-path /` itself.

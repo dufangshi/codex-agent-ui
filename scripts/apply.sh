@@ -172,25 +172,6 @@ def agent_record():
         return None
     return payload
 
-def status_snapshot():
-    return load_json(run(["treer", "status"]), "treer status")
-
-def services():
-    payload = load_json(run(["treer", "network", "service", "list"]), "treer network service list")
-    if isinstance(payload, dict):
-        return payload.get("services") or payload.get("items") or []
-    return payload if isinstance(payload, list) else []
-
-def service_for_agent(agent_id):
-    matches = []
-    for service in services():
-        if not isinstance(service, dict):
-            continue
-        target = service.get("target_agent_id") or service.get("agent_id")
-        if target == agent_id and service.get("protocol") == "http":
-            matches.append(service)
-    return matches
-
 deadline = time.time() + 300
 last = ""
 while time.time() < deadline:
@@ -204,17 +185,15 @@ while time.time() < deadline:
     status = record.get("status")
     if status in {"failed", "exited"}:
         raise SystemExit(f"agent {name} entered {status}")
-    matches = service_for_agent(agent_id) if agent_id else []
-    snapshot = status_snapshot()
-    uis = snapshot.get("agent_uis") or []
-    ui = next((item for item in uis if isinstance(item, dict) and item.get("agent_id") == agent_id), None)
-    if ui and matches:
-        print(json.dumps({"ok": True, "agent": record, "service": matches[0], "ui": ui}, indent=2))
+    interface = record.get("interface") if isinstance(record.get("interface"), dict) else {}
+    ui_path = interface.get("ui_path")
+    protocol = interface.get("protocol")
+    if protocol == "treer.agent-interface/v1" and ui_path:
+        print(json.dumps({"ok": True, "agent": record, "interface": interface}, indent=2))
         raise SystemExit(0)
-    if not matches:
-        last = f"agent {name} status={status} has no Agent-scoped HTTP service yet"
-    elif not ui:
-        last = f"agent {name} has a service but no agent_uis entry yet"
+    last = (
+        f"agent {name} status={status} protocol={protocol or '-'} ui_path={ui_path or '-'}"
+    )
     time.sleep(2)
 
 raise SystemExit(f"timed out waiting for {name} UI readiness: {last}")

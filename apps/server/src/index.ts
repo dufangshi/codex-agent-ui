@@ -16,6 +16,10 @@ const command = process.env.CODEX_BIN || "codex";
 
 const runtime = new CodexRuntime(command, cwd, process.env.CODEX_AGENT_UI_ROOT);
 const sockets = new Set<{ agentId: string; send: (data: string) => void }>();
+const AIS_PROTOCOL = "treer.agent-interface/v1";
+const aisInstanceId = process.env.TREER_AIS_INSTANCE_ID?.trim() || defaultAgentId();
+const aisUiPath = "/";
+const aisCapabilities: string[] = [];
 
 function requestUrl(request: IncomingMessage) {
   return new URL(request.url ?? "/", "http://127.0.0.1");
@@ -198,6 +202,15 @@ const server = createServer(async (request, response) => {
   const method = request.method ?? "GET";
   const path = requestPath(request.url ?? "/");
   try {
+    if (path === "/v1/manifest" && (method === "GET" || method === "HEAD")) {
+      send(response, 200, {
+        protocol: AIS_PROTOCOL,
+        instance_id: aisInstanceId,
+        capabilities: aisCapabilities,
+        ui_path: aisUiPath,
+      });
+      return;
+    }
     if (path === "/api/health" || path === "/.treer/agent") {
       const snapshot = runtime.snapshot();
       const surface = {

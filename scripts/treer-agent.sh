@@ -8,6 +8,7 @@ BIND="http://127.0.0.1:${NS_PORT}/api/agents/bind"
 export CODEX_AGENT_UI_CWD="${CODEX_AGENT_UI_CWD:-$(pwd)}"
 export CODEX_AGENT_UI_WEB_DIST="${CODEX_AGENT_UI_WEB_DIST:-$ROOT/apps/web/dist}"
 export CODEX_AGENT_UI_PORT="$NS_PORT"
+export TREER_AIS_INSTANCE_ID="${TREER_AIS_INSTANCE_ID:-${TREER_AGENT_ID:-codex-ui}}"
 
 export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 if command -v fnm >/dev/null 2>&1; then
@@ -61,13 +62,27 @@ register_ui() {
     echo "treer CLI is not on PATH; cannot register Agent UI" >&2
     exit 1
   fi
-  SERVICE_NAME="${CODEX_AGENT_UI_SERVICE:-codex-ui}"
-  if ! treer network service create "$SERVICE_NAME" --agent self --port "$NS_PORT" --protocol http; then
-    SERVICE_NAME="${CODEX_AGENT_UI_SERVICE:-codex-ui}-${TREER_AGENT_ID:-$$}"
-    treer network service create "$SERVICE_NAME" --agent self --port "$NS_PORT" --protocol http
-  fi
-  treer ui set "$SERVICE_NAME"
-  echo "registered Treer Agent UI for Agent-scoped service $SERVICE_NAME on ns port $NS_PORT"
+  treer interface register \
+    --port "$NS_PORT" \
+    --instance-id "$TREER_AIS_INSTANCE_ID" \
+    --ui-path /
+  echo "registered Treer Agent Interface on 127.0.0.1:${NS_PORT} with ui_path=/"
+}
+
+keep_registered() {
+  while [ "${1:-}" = "" ] || kill -0 "$1" 2>/dev/null; do
+    if [ "${1:-}" = "" ] && ! health_ok; then
+      return 0
+    fi
+    treer interface register \
+      --port "$NS_PORT" \
+      --instance-id "$TREER_AIS_INSTANCE_ID" \
+      --ui-path / >/dev/null 2>&1 || true
+    sleep 20
+    if [ "${1:-}" = "" ] && ! health_ok; then
+      return 0
+    fi
+  done
 }
 
 wait_for_health() {
@@ -89,9 +104,7 @@ attach_existing() {
   echo "attaching to existing Codex Agent UI on 127.0.0.1:${NS_PORT}"
   bind_agent
   register_ui
-  while health_ok; do
-    sleep 2
-  done
+  keep_registered
   echo "shared Codex Agent UI listener is gone"
 }
 
@@ -121,4 +134,5 @@ fi
 echo "started Codex Agent UI on 127.0.0.1:${NS_PORT}"
 bind_agent
 register_ui
+keep_registered "$SERVER_PID" &
 wait "$SERVER_PID"
