@@ -78,7 +78,12 @@ export class AcpRuntime extends EventEmitter {
       command: parsed.command,
       args: parsed.args,
       cwd: this.cwd,
-      env: process.env,
+      env: {
+        ...process.env,
+        HOME: process.env.HOME,
+        CODEX_HOME: process.env.CODEX_HOME || `${process.env.HOME ?? ""}/.codex`,
+        CODEX_PATH: process.env.CODEX_PATH || "codex",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
@@ -129,11 +134,13 @@ export class AcpRuntime extends EventEmitter {
       },
       clientInfo: { name: "treer-acp-ui", title: "Treer ACP UI", version: "0.1.0" },
     });
-    const methods = (initialized.authMethods ?? []).filter(
-      (entry) => !("type" in entry && entry.type === "terminal"),
-    );
-    if (methods.length > 0) {
-      const method = methods.find((entry) => entry.id === "none") ?? methods[0]!;
+    const methods = initialized.authMethods ?? [];
+    this.emit("log", `ACP auth methods: ${methods.map((entry) => entry.id).join(", ") || "(none)"}`);
+    const preferred = methods.filter((entry) => !("type" in entry && entry.type === "terminal"));
+    const method = preferred.find((entry) => entry.id === "none")
+      ?? preferred[0]
+      ?? methods[0];
+    if (method) {
       await this.context.request(acp.methods.agent.authenticate, { methodId: method.id });
     }
     this.ready = true;
