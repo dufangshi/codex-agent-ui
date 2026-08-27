@@ -144,8 +144,8 @@ export class AcpRuntime extends EventEmitter {
       hasApiKey ? preferred.find((entry) => entry.id === "api-key") : undefined,
       ...preferred,
       ...methods,
-    ].filter((entry, index, list): entry is typeof methods[number] =>
-      Boolean(entry) && list.findIndex((candidate) => candidate?.id === entry.id) === index,
+    ].filter((entry, index, list): entry is (typeof methods)[number] =>
+      entry != null && list.findIndex((candidate) => candidate?.id === entry.id) === index,
     );
     let authenticated = ordered.length === 0;
     for (const method of ordered) {
