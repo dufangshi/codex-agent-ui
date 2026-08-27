@@ -11,9 +11,10 @@ adapter before starting the Agent.
 ## Recipe
 
 Share this repository URL. An installer Agent reads `treer-agent.json` and
-`skills/install-codex-agent-ui/SKILL.md`, then runs `scripts/apply.sh`. That
-probes available CLIs, installs missing ACP adapters, saves one Launch profile
-per harness, and creates the first command Agent for each.
+`skills/install-codex-agent-ui/SKILL.md`, then runs `scripts/apply.sh --list`
+and asks which harnesses to install. `apply.sh --agent` probes that CLI,
+installs a missing ACP adapter, saves a Launch profile, and creates the
+command Agent. Each Agent picks a free loopback port.
 
 | Agent | ACP transport | Base probe | ACP command | Adapter |
 | --- | --- | --- | --- | --- |
@@ -25,12 +26,13 @@ per harness, and creates the first command Agent for each.
 ```bash
 git clone https://github.com/dufangshi/codex-agent-ui.git
 # from a Treer-managed installer Agent:
-./scripts/apply.sh --dir "$PWD"
-# or one harness:
-./scripts/apply.sh --agent grok
+./scripts/apply.sh --list
+./scripts/apply.sh --dir "$PWD" --agent grok --agent cursor
 ```
 
-`apply.sh` without `--agent` installs every harness whose base CLI is on PATH.
+`apply.sh` without `--agent` still installs every harness whose base CLI is on
+PATH. Installer Agents should not use that path: they ask first, then pass
+`--agent`.
 
 ## Run locally
 

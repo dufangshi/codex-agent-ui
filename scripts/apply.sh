@@ -2,6 +2,7 @@
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 AGENTS="${ACP_AGENT:-}"
+LIST_ONLY=
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -25,6 +26,10 @@ while [ "$#" -gt 0 ]; do
       AGENTS=$(printf '%s' "$2" | tr ',+' ' ')
       shift 2
       ;;
+    --list)
+      LIST_ONLY=1
+      shift
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
@@ -35,6 +40,22 @@ done
 if [ ! -f "$ROOT/treer-agent.json" ]; then
   echo "missing $ROOT/treer-agent.json" >&2
   exit 1
+fi
+
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+if command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env --shell=bash)"
+fi
+
+if [ "${LIST_ONLY:-}" = "1" ]; then
+  python3 - <<'PY'
+import json, shutil
+supported = ["grok", "cursor", "claude", "codex"]
+base = {"grok": "grok", "cursor": "cursor-agent", "claude": "claude", "codex": "codex"}
+ready = [agent for agent in supported if shutil.which(base[agent])]
+print(json.dumps({"supported": supported, "ready": ready}, indent=2))
+PY
+  exit 0
 fi
 if [ ! -f "$ROOT/apps/web/dist/index.html" ]; then
   echo "missing tracked web dist; this checkout cannot start without a build" >&2
@@ -47,11 +68,6 @@ fi
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is not on PATH" >&2
   exit 1
-fi
-
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
-if command -v fnm >/dev/null 2>&1; then
-  eval "$(fnm env --shell=bash)"
 fi
 
 echo "installing server dependencies in $ROOT/apps/server"
@@ -109,16 +125,6 @@ adapter_install() {
   esac
 }
 
-agent_port() {
-  case "$1" in
-    grok) echo 4173 ;;
-    cursor) echo 4174 ;;
-    claude) echo 4175 ;;
-    codex) echo 4176 ;;
-    *) echo 4173 ;;
-  esac
-}
-
 profile_name() {
   case "$1" in
     grok) echo "ACP Grok" ;;
@@ -173,15 +179,14 @@ upsert_and_start() {
   agent="$1"
   name="acp-$agent"
   profile="$(profile_name "$agent")"
-  port="$(agent_port "$agent")"
   description="Treer iframe UI over Agent Client Protocol for $(profile_name "$agent")."
   echo "saving launch profile $profile with cwd $AGENT_CWD"
-  python3 - "$profile" "$description" "$AGENT_CWD" "$agent" "$port" <<'PY'
+  python3 - "$profile" "$description" "$AGENT_CWD" "$agent" <<'PY'
 import json, subprocess, sys
 
-name, description, cwd, agent, port = sys.argv[1:6]
+name, description, cwd, agent = sys.argv[1:5]
 command = "./scripts/treer-agent.sh"
-args = ["--agent", agent, "--port", port]
+args = ["--agent", agent]
 
 def run_treer(argv):
     print("+", " ".join(argv), flush=True)
@@ -211,7 +216,7 @@ PY
   start_agent() {
     echo "creating command agent $name with host-relative cwd $AGENT_CWD"
     treer agent admin create --machine self --kind command --name "$name" --cwd "$AGENT_CWD" -- \
-      ./scripts/treer-agent.sh --agent "$agent" --port "$port"
+      ./scripts/treer-agent.sh --agent "$agent"
   }
 
   if treer agent show "$name" >/dev/null 2>&1; then

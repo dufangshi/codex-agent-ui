@@ -32,7 +32,33 @@ case "$ACP_AGENT" in
     ;;
 esac
 
-NS_PORT="${NS_PORT:-$DEFAULT_PORT}"
+if [ -z "$NS_PORT" ]; then
+  NS_PORT="$(python3 - "$ACP_AGENT" "${TREER_AGENT_ID:-local}" "$DEFAULT_PORT" <<'PY'
+import hashlib
+import socket
+import sys
+
+agent, agent_id, default_port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+if agent_id == "local":
+    candidates = [default_port]
+else:
+    seed = int.from_bytes(hashlib.sha256(f"{agent}:{agent_id}".encode()).digest()[:4], "big")
+    first = 20000 + seed % 30000
+    candidates = ((first + offset - 20000) % 30000 + 20000 for offset in range(30000))
+
+for candidate in candidates:
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", candidate))
+        except OSError:
+            continue
+    print(candidate)
+    break
+else:
+    raise SystemExit("no available loopback port for ACP Agent UI")
+PY
+)"
+fi
 HEALTH="http://127.0.0.1:${NS_PORT}/api/health"
 INSTANCE_ID="${CODEX_AGENT_UI_INSTANCE_ID:-acp-${ACP_AGENT}-${TREER_AGENT_ID:-local}-$$}"
 export ACP_AGENT

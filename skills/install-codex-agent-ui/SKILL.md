@@ -27,8 +27,8 @@ CLIs only when the user asked for that harness:
 
 ## Procedure
 
-Read `treer-agent.json` at the repository root. Then run the apply script. Do
-not invent a second install path.
+Read `treer-agent.json` at the repository root. Inspect the recipe, then ask
+the human which agents to install. Do not invent a second install path.
 
 ```bash
 REPO_URL="$(python3 -c 'import json; print(json.load(open("treer-agent.json"))["source"]["git"])')"
@@ -37,19 +37,24 @@ DEST="${TREER_RECIPE_DIR:-$PWD/codex-agent-ui}"
 if [ ! -f "$DEST/scripts/apply.sh" ]; then
   git clone --depth 1 --branch "$REF" "$REPO_URL" "$DEST"
 fi
-"$DEST/scripts/apply.sh" --dir "$DEST"
+"$DEST/scripts/apply.sh" --list
 ```
 
-If this checkout already contains `scripts/apply.sh`, skip clone and run:
+Show `supported` and `ready` to the user and wait for which harnesses to
+install. Then pass only those names:
 
 ```bash
-./scripts/apply.sh
+"$DEST/scripts/apply.sh" --dir "$DEST" --agent grok --agent cursor
 ```
 
-`apply.sh` installs isolated server dependencies, installs an ACP adapter when
-the harness is not native ACP, upserts a Launch profile per harness, creates
-the first command Agent for each available CLI, and waits until that Agent's
-verified Interface descriptor includes `ui_path` and the required capabilities.
+If this checkout already contains `scripts/apply.sh`, skip clone, run
+`--list`, ask, then run `./scripts/apply.sh --agent ...`.
+
+Do not run `apply.sh` with no `--agent` from this installer: that installs
+every CLI on PATH. `apply.sh` installs isolated server dependencies, installs
+an ACP adapter when the harness is not native ACP, upserts a Launch profile
+per chosen harness, creates that command Agent, and waits until its verified
+Interface descriptor includes `ui_path` and the required capabilities.
 
 ## Success
 
