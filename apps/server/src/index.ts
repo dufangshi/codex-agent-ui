@@ -5,16 +5,18 @@ import { fileURLToPath } from "node:url";
 
 import { WebSocketServer } from "ws";
 
+import { resolveAcpAgent } from "./acp-catalog.js";
+import { AcpRuntime, ThreadPathError, type ThreadState } from "./acp-runtime.js";
 import { defaultAgentId, resolveAgentId } from "./agent-id.js";
-import { CodexRuntime, ThreadPathError, type ThreadState } from "./codex.js";
 
 const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const webDist = process.env.CODEX_AGENT_UI_WEB_DIST || join(root, "apps/web/dist");
 const port = Number(process.env.CODEX_AGENT_UI_PORT || process.argv.find((arg) => arg.startsWith("--port="))?.slice(7) || "4173");
 const cwd = resolve(process.env.CODEX_AGENT_UI_CWD || process.cwd());
-const command = process.env.CODEX_BIN || "codex";
+const acpAgent = resolveAcpAgent(process.env.ACP_AGENT || "codex");
+const command = process.env.ACP_COMMAND || acpAgent.serverCommand;
 
-const runtime = new CodexRuntime(command, cwd, process.env.CODEX_AGENT_UI_ROOT);
+const runtime = new AcpRuntime(command, cwd, process.env.CODEX_AGENT_UI_ROOT, acpAgent.displayName);
 const sockets = new Set<{ agentId: string; send: (data: string) => void }>();
 const completedOperations = new Map<string, number>();
 const AIS_PROTOCOL = "treer.agent-interface/v1";
@@ -339,7 +341,7 @@ const server = createServer(async (request, response) => {
         protocol: "treer.agent.surface",
         version: 1,
         ready: snapshot.ready,
-        title: snapshot.thread?.title ?? "Codex",
+        title: snapshot.thread?.title ?? acpAgent.displayName,
         ui: true,
         capabilities: aisCapabilities,
       };

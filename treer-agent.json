@@ -1,22 +1,17 @@
 {
-  "name": "Codex Agent UI",
-  "description": "One Treer Agent, one Codex thread. Shares app-server when a same-type listener is already reachable.",
+  "name": "ACP Agent UI",
+  "description": "Generic Treer iframe UI over Agent Client Protocol. One recipe for Codex, Grok, Cursor, Claude, and other ACP agents. Installs an ACP adapter when the harness is not native ACP.",
   "source": {
     "git": "https://github.com/dufangshi/codex-agent-ui.git",
     "ref": "main"
   },
-  "requires": ["git", "node", "npm", "codex", "treer", "curl"],
+  "requires": ["git", "node", "npm", "treer", "curl"],
   "install": ["npm --prefix apps/server install"],
   "run": {
     "command": "./scripts/treer-agent.sh",
-    "args": []
+    "args": ["--agent", "codex", "--port", "4176"]
   },
   "ui": true,
-  "port": 4173,
-  "health": "/api/health",
-  "surface": "/.treer/agent",
-  "ready": {
-    "http": 200,
-    "body": { "ready": true, "ui": true }
-  }
+  "port": 4176,
+  "health": "/api/health"
 }

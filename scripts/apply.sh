@@ -1,16 +1,28 @@
 #!/bin/sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-NAME="${TREER_RECIPE_AGENT_NAME:-codex-ui}"
+AGENTS="${ACP_AGENT:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --name)
-      NAME="$2"
+      echo "--name is derived from --agent; ignoring $2" >&2
       shift 2
       ;;
     --dir)
       ROOT="$(CDPATH= cd -- "$2" && pwd)"
+      shift 2
+      ;;
+    --agent)
+      if [ -n "$AGENTS" ]; then
+        AGENTS="$AGENTS $2"
+      else
+        AGENTS="$2"
+      fi
+      shift 2
+      ;;
+    --agents)
+      AGENTS=$(printf '%s' "$2" | tr ',+' ' ')
       shift 2
       ;;
     *)
@@ -37,12 +49,17 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+if command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env --shell=bash)"
+fi
+
 echo "installing server dependencies in $ROOT/apps/server"
-# Isolate from the parent pnpm workspace. A workspace-hoisted lockfile
-# produces broken ../../node_modules/.pnpm symlinks after a git clone.
 rm -rf "$ROOT/apps/server/node_modules"
 npm --prefix "$ROOT/apps/server" install --install-strategy=nested --no-workspaces
-if [ ! -f "$ROOT/apps/server/node_modules/ws/package.json" ] || [ ! -x "$ROOT/apps/server/node_modules/.bin/tsx" ]; then
+if [ ! -f "$ROOT/apps/server/node_modules/ws/package.json" ] \
+  || [ ! -x "$ROOT/apps/server/node_modules/.bin/tsx" ] \
+  || [ ! -d "$ROOT/apps/server/node_modules/@agentclientprotocol/sdk" ]; then
   echo "server dependencies did not install into $ROOT/apps/server/node_modules" >&2
   exit 1
 fi
@@ -64,21 +81,107 @@ if rel.startswith("..") or os.path.isabs(rel):
 print(rel)
 ' "$ROOT" "$WHOAMI")"
 
-echo "saving launch profile from $ROOT/treer-agent.json with cwd $AGENT_CWD"
-python3 - "$ROOT/treer-agent.json" "$AGENT_CWD" <<'PY'
+base_command() {
+  case "$1" in
+    grok) echo grok ;;
+    cursor) echo cursor-agent ;;
+    claude) echo claude ;;
+    codex) echo codex ;;
+    *) return 1 ;;
+  esac
+}
+
+server_command() {
+  case "$1" in
+    grok) echo grok ;;
+    cursor) echo cursor-agent ;;
+    claude) echo claude-agent-acp ;;
+    codex) echo codex-acp ;;
+    *) return 1 ;;
+  esac
+}
+
+adapter_install() {
+  case "$1" in
+    claude) echo "npm install -g @agentclientprotocol/claude-agent-acp@latest" ;;
+    codex) echo "npm install -g @agentclientprotocol/codex-acp@latest" ;;
+    *) echo "" ;;
+  esac
+}
+
+agent_port() {
+  case "$1" in
+    grok) echo 4173 ;;
+    cursor) echo 4174 ;;
+    claude) echo 4175 ;;
+    codex) echo 4176 ;;
+    *) echo 4173 ;;
+  esac
+}
+
+profile_name() {
+  case "$1" in
+    grok) echo "ACP Grok" ;;
+    cursor) echo "ACP Cursor" ;;
+    claude) echo "ACP Claude" ;;
+    codex) echo "ACP Codex" ;;
+    *) echo "ACP $1" ;;
+  esac
+}
+
+ensure_adapter() {
+  agent="$1"
+  base="$(base_command "$agent")"
+  server="$(server_command "$agent")"
+  install="$(adapter_install "$agent")"
+  if ! command -v "$base" >/dev/null 2>&1; then
+    echo "skipping $agent: base CLI '$base' is not on PATH" >&2
+    return 1
+  fi
+  if [ -n "$install" ] && ! command -v "$server" >/dev/null 2>&1; then
+    echo "installing ACP adapter for $agent: $install"
+    sh -c "$install"
+  fi
+  if ! command -v "$server" >/dev/null 2>&1; then
+    echo "ACP server '$server' is still missing for $agent" >&2
+    return 1
+  fi
+  echo "ACP $agent is ready (base=$base server=$server)"
+  return 0
+}
+
+SELECTED=""
+if [ -z "$AGENTS" ] || [ "$AGENTS" = "all" ]; then
+  for candidate in grok cursor claude codex; do
+    if ensure_adapter "$candidate"; then
+      SELECTED="$SELECTED $candidate"
+    fi
+  done
+else
+  for candidate in $AGENTS; do
+    ensure_adapter "$candidate"
+    SELECTED="$SELECTED $candidate"
+  done
+fi
+SELECTED=$(printf '%s' "$SELECTED" | xargs)
+if [ -z "$SELECTED" ]; then
+  echo "no ACP agents are available; install grok, cursor-agent, claude, or codex first" >&2
+  exit 1
+fi
+
+upsert_and_start() {
+  agent="$1"
+  name="acp-$agent"
+  profile="$(profile_name "$agent")"
+  port="$(agent_port "$agent")"
+  description="Treer iframe UI over Agent Client Protocol for $(profile_name "$agent")."
+  echo "saving launch profile $profile with cwd $AGENT_CWD"
+  python3 - "$profile" "$description" "$AGENT_CWD" "$agent" "$port" <<'PY'
 import json, subprocess, sys
 
-meta = json.load(open(sys.argv[1]))
-cwd = sys.argv[2]
-name = (meta.get("name") or "").strip() or "recipe"
-description = meta.get("description") or ""
-run = meta.get("run") if isinstance(meta.get("run"), dict) else {}
-command = (run.get("command") or "./scripts/treer-agent.sh").strip()
-args = run.get("args") or []
-if not command:
-    raise SystemExit("treer-agent.json run.command is empty")
-if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
-    raise SystemExit("treer-agent.json run.args must be an array of strings")
+name, description, cwd, agent, port = sys.argv[1:6]
+command = "./scripts/treer-agent.sh"
+args = ["--agent", agent, "--port", port]
 
 def run_treer(argv):
     print("+", " ".join(argv), flush=True)
@@ -91,65 +194,40 @@ exists = subprocess.run(
 )
 if exists.returncode == 0:
     update = [
-        "treer",
-        "agent",
-        "admin",
-        "profile",
-        "update",
-        name,
-        "--description",
-        description,
-        "--cwd",
-        cwd,
-        "--command",
-        command,
+        "treer", "agent", "admin", "profile", "update", name,
+        "--description", description, "--cwd", cwd, "--command", command,
     ]
-    if args:
-        for item in args:
-            update.extend(["--arg", item])
-    else:
-        update.append("--clear-args")
+    for item in args:
+        update.extend(["--arg", item])
     run_treer(update)
 else:
-    create = [
-        "treer",
-        "agent",
-        "admin",
-        "profile",
-        "create",
-        name,
-        "--description",
-        description,
-        "--cwd",
-        cwd,
-        command,
-    ]
-    if args:
-        create.append("--")
-        create.extend(args)
-    run_treer(create)
+    run_treer([
+        "treer", "agent", "admin", "profile", "create", name,
+        "--description", description, "--cwd", cwd, command, "--", *args,
+    ])
 print(json.dumps({"ok": True, "profile": name, "cwd": cwd, "command": command, "args": args}))
 PY
 
-create_agent() {
-  echo "creating command agent $NAME with host-relative cwd $AGENT_CWD"
-  treer agent admin create --machine self --kind command --name "$NAME" --cwd "$AGENT_CWD" -- ./scripts/treer-agent.sh
-}
+  start_agent() {
+    echo "creating command agent $name with host-relative cwd $AGENT_CWD"
+    treer agent admin create --machine self --kind command --name "$name" --cwd "$AGENT_CWD" -- \
+      ./scripts/treer-agent.sh --agent "$agent" --port "$port"
+  }
 
-if treer agent show "$NAME" >/dev/null 2>&1; then
-  STATUS="$(treer agent show "$NAME" | python3 -c 'import json,sys; rec=json.load(sys.stdin); rec=rec.get("agent", rec); print(rec.get("status") or "")')"
-  if [ "$STATUS" = "failed" ] || [ "$STATUS" = "exited" ]; then
-    echo "agent $NAME is $STATUS; recreating"
-    treer agent admin delete "$NAME"
-    create_agent
+  if treer agent show "$name" >/dev/null 2>&1; then
+    STATUS="$(treer agent show "$name" | python3 -c 'import json,sys; rec=json.load(sys.stdin); rec=rec.get("agent", rec); print(rec.get("status") or "")')"
+    if [ "$STATUS" = "failed" ] || [ "$STATUS" = "exited" ]; then
+      echo "agent $name is $STATUS; recreating"
+      treer agent admin delete "$name"
+      start_agent
+    else
+      echo "agent $name already exists ($STATUS); waiting for readiness"
+    fi
   else
-    echo "agent $NAME already exists ($STATUS); waiting for readiness"
+    start_agent
   fi
-else
-  create_agent
-fi
 
-python3 - "$NAME" <<'PY'
+  python3 - "$name" <<'PY'
 import json, subprocess, sys, time
 
 name = sys.argv[1]
@@ -200,3 +278,10 @@ while time.time() < deadline:
 
 raise SystemExit(f"timed out waiting for {name}: {last}")
 PY
+}
+
+for agent in $SELECTED; do
+  upsert_and_start "$agent"
+done
+
+echo "installed ACP UI for:$SELECTED"

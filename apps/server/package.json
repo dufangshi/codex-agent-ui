@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "test": "tsx --test src/path.test.ts src/agent-id.test.ts",
+    "test": "tsx --test src/path.test.ts src/agent-id.test.ts src/acp-catalog.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
     "tsx": "^4.19.3",
     "ws": "^8.18.3"
   },
