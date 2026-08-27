@@ -47,6 +47,12 @@ export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --shell=bash)"
 fi
+if [ -f "${HOME}/.grok/env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "${HOME}/.grok/env"
+  set +a
+fi
 
 if [ ! -f "$CODEX_AGENT_UI_WEB_DIST/index.html" ]; then
   echo "web dist missing; run: pnpm --dir $ROOT build" >&2

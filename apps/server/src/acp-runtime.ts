@@ -6,6 +6,7 @@ import type { ChildProcess } from "node:child_process";
 
 import * as acp from "@agentclientprotocol/sdk";
 
+import { loadAcpSpawnEnvironment, selectAcpAuthMethodIds } from "./acp-environment.js";
 import { AcpTurnMapper } from "./acp-mapper.js";
 import { AcpTerminalService } from "./acp-terminal.js";
 import { defaultAgentId } from "./agent-id.js";
@@ -74,16 +75,13 @@ export class AcpRuntime extends EventEmitter {
   async start() {
     if (this.ready) return;
     const parsed = parseCommandLine(this.command);
+    const loaded = await loadAcpSpawnEnvironment();
+    this.emit("log", `ACP env sources: ${loaded.sources.join(", ") || "process env"}`);
     const child = spawnProcess({
       command: parsed.command,
       args: parsed.args,
       cwd: this.cwd,
-      env: {
-        ...process.env,
-        HOME: process.env.HOME,
-        CODEX_HOME: process.env.CODEX_HOME || `${process.env.HOME ?? ""}/.codex`,
-        CODEX_PATH: process.env.CODEX_PATH || "codex",
-      },
+      env: loaded.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
@@ -136,30 +134,35 @@ export class AcpRuntime extends EventEmitter {
     });
     const methods = initialized.authMethods ?? [];
     this.emit("log", `ACP auth methods: ${methods.map((entry) => entry.id).join(", ") || "(none)"}`);
-    const preferred = methods.filter((entry) => !("type" in entry && entry.type === "terminal"));
-    const hasApiKey = Boolean(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY);
-    const ordered = [
-      preferred.find((entry) => entry.id === "none"),
-      preferred.find((entry) => entry.id === "chat-gpt" || entry.id === "chatgpt"),
-      hasApiKey ? preferred.find((entry) => entry.id === "api-key") : undefined,
-      ...preferred,
-      ...methods,
-    ].filter((entry, index, list): entry is (typeof methods)[number] =>
-      entry != null && list.findIndex((candidate) => candidate?.id === entry.id) === index,
-    );
+    const ordered = selectAcpAuthMethodIds({
+      advertised: methods,
+      env: loaded.env,
+      hasChatGptSession: loaded.hasChatGptSession,
+    });
+    this.emit("log", `ACP auth order: ${ordered.join(", ") || "(skip)"}`);
     let authenticated = ordered.length === 0;
-    for (const method of ordered) {
+    for (const methodId of ordered) {
       try {
-        await this.context.request(acp.methods.agent.authenticate, { methodId: method.id });
-        this.emit("log", `ACP authenticated with ${method.id}`);
+        await withTimeout(
+          this.context.request(acp.methods.agent.authenticate, {
+            methodId,
+            _meta: { headless: true },
+          }),
+          12_000,
+          `ACP authenticate ${methodId} timed out`,
+        );
+        this.emit("log", `ACP authenticated with ${methodId}`);
         authenticated = true;
         break;
       } catch (error) {
-        this.emit("log", `ACP auth ${method.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.emit("log", `ACP auth ${methodId} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (!authenticated) {
+    if (!authenticated && methods.length > 0 && ordered.length > 0) {
       throw new Error("ACP agent requires authentication, but no advertised method succeeded");
+    }
+    if (!authenticated) {
+      this.emit("log", "ACP authenticate skipped; trying session/new with existing CLI login");
     }
     this.ready = true;
     this.models = [{
@@ -351,4 +354,20 @@ export class AcpRuntime extends EventEmitter {
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     return thread;
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }

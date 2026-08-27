@@ -43,3 +43,9 @@ ACP_AGENT=grok ACP_COMMAND="grok agent stdio" CODEX_AGENT_UI_PORT=4173 \
 The private listener exposes `treer.agent-interface/v1` plus the thread UI.
 The start script registers `treer interface register --ui-path /` with prompt,
 transcript, state, and abort capabilities.
+
+Treer Host processes do not inherit an interactive shell, so the UI loads
+harness credentials from the CLI's usual files (`~/.grok/env`,
+`~/.codex/auth.json`) and prefers non-interactive ACP auth (`xai.api_key`,
+`cached_token`, `api-key`, `cursor_login`). Browser/ChatGPT login is only
+used when a local subscription session already exists.
