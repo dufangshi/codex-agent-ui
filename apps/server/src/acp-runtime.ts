@@ -119,7 +119,7 @@ export class AcpRuntime extends EventEmitter {
       .onRequest(acp.methods.client.terminal.release, (request) => this.terminal.release(request.params));
     this.connection = app.connect(stream);
     this.context = this.connection.agent;
-    await this.context.request(acp.methods.agent.initialize, {
+    const initialized = await this.context.request(acp.methods.agent.initialize, {
       protocolVersion: acp.PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: true, writeTextFile: true },
@@ -129,6 +129,13 @@ export class AcpRuntime extends EventEmitter {
       },
       clientInfo: { name: "treer-acp-ui", title: "Treer ACP UI", version: "0.1.0" },
     });
+    const methods = (initialized.authMethods ?? []).filter(
+      (entry) => !("type" in entry && entry.type === "terminal"),
+    );
+    if (methods.length > 0) {
+      const method = methods.find((entry) => entry.id === "none") ?? methods[0]!;
+      await this.context.request(acp.methods.agent.authenticate, { methodId: method.id });
+    }
     this.ready = true;
     this.models = [{
       id: "default",
