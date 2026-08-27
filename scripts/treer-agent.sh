@@ -72,9 +72,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+health_matches() {
+  curl -sf "$HEALTH" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("harness")==sys.argv[1] else 1)' "$ACP_AGENT" 2>/dev/null
+}
+
 i=0
 while [ "$i" -lt 180 ]; do
-  if curl -sf "$HEALTH" >/dev/null 2>&1; then
+  if health_matches; then
     break
   fi
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then

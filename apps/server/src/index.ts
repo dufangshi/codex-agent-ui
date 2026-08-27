@@ -346,7 +346,11 @@ const server = createServer(async (request, response) => {
         capabilities: aisCapabilities,
       };
       if (path === "/api/health") {
-        send(response, snapshot.ready ? 200 : 503, { ok: snapshot.ready, ready: snapshot.ready });
+        send(response, snapshot.ready ? 200 : 503, {
+          ok: snapshot.ready,
+          ready: snapshot.ready,
+          harness: acpAgent.id,
+        });
         return;
       }
       send(response, snapshot.ready ? 200 : 503, surface);
