@@ -137,11 +137,29 @@ export class AcpRuntime extends EventEmitter {
     const methods = initialized.authMethods ?? [];
     this.emit("log", `ACP auth methods: ${methods.map((entry) => entry.id).join(", ") || "(none)"}`);
     const preferred = methods.filter((entry) => !("type" in entry && entry.type === "terminal"));
-    const method = preferred.find((entry) => entry.id === "none")
-      ?? preferred[0]
-      ?? methods[0];
-    if (method) {
-      await this.context.request(acp.methods.agent.authenticate, { methodId: method.id });
+    const hasApiKey = Boolean(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY);
+    const ordered = [
+      preferred.find((entry) => entry.id === "none"),
+      preferred.find((entry) => entry.id === "chat-gpt" || entry.id === "chatgpt"),
+      hasApiKey ? preferred.find((entry) => entry.id === "api-key") : undefined,
+      ...preferred,
+      ...methods,
+    ].filter((entry, index, list): entry is typeof methods[number] =>
+      Boolean(entry) && list.findIndex((candidate) => candidate?.id === entry.id) === index,
+    );
+    let authenticated = ordered.length === 0;
+    for (const method of ordered) {
+      try {
+        await this.context.request(acp.methods.agent.authenticate, { methodId: method.id });
+        this.emit("log", `ACP authenticated with ${method.id}`);
+        authenticated = true;
+        break;
+      } catch (error) {
+        this.emit("log", `ACP auth ${method.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (!authenticated) {
+      throw new Error("ACP agent requires authentication, but no advertised method succeeded");
     }
     this.ready = true;
     this.models = [{
