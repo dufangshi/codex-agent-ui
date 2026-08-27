@@ -215,16 +215,24 @@ export class AcpRuntime extends EventEmitter {
     thread.turns.push(started);
     this.emit("state");
     const context = this.requireContext();
-    try {
-      const response = await context.request(acp.methods.agent.session.prompt, {
-        sessionId: session.providerSessionId,
-        prompt: [{ type: "text", text }],
-      });
-      this.finishTurn(thread, session, mapper, response.stopReason === "cancelled" ? "interrupted" : "completed");
-    } catch (error) {
-      this.finishTurn(thread, session, mapper, "failed", error instanceof Error ? error.message : String(error));
-      throw error;
-    }
+    void context.request(acp.methods.agent.session.prompt, {
+      sessionId: session.providerSessionId,
+      prompt: [{ type: "text", text }],
+    }).then(
+      (response) => this.finishTurn(
+        thread,
+        session,
+        mapper,
+        response.stopReason === "cancelled" ? "interrupted" : "completed",
+      ),
+      (error) => this.finishTurn(
+        thread,
+        session,
+        mapper,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
   }
 
   async interrupt(threadId?: string) {
