@@ -43,11 +43,13 @@ If this checkout already contains `scripts/apply.sh`, skip clone and run:
 
 `apply.sh` installs isolated server dependencies, upserts a Launch profile
 from `treer-agent.json`, creates the first command Agent with a Host-relative
-`--cwd`, and waits until that Agent's Interface descriptor includes `ui_path`.
-Each Treer Agent is one thread. Extra conversations use Launch to
-create another Agent. If that Agent can reach an already healthy listener of
-this recipe, it binds a thread there instead of starting another app-server
-and frontend. Do not run this installer again for another thread.
+`--cwd`, and waits until that Agent's verified Interface descriptor includes
+`ui_path` and the required capabilities. Each Treer Agent is one thread.
+Extra conversations use Launch to create another Agent. If that Agent can
+reach an already healthy listener of this recipe, it binds a thread there
+instead of starting another app-server and frontend, but still registers its
+own AIS adapter with a unique `instance_id`. Do not run this installer again
+for another thread.
 
 ## Success
 
@@ -56,11 +58,14 @@ Stop only when all of these are true:
 1. `treer agent show <name>` exists and is not `failed` or `exited`.
 2. That Agent's `interface.protocol` is `treer.agent-interface/v1`.
 3. That Agent's `interface.ui_path` is `/`.
-4. `treer agent admin profile show` returns the name from `treer-agent.json`.
+4. That Agent's `interface.capabilities` include `prompt.submit`,
+   `transcript.read`, `state.observe`, and `abort`.
+5. `treer agent admin profile show` returns the name from `treer-agent.json`.
 
 The installer cannot probe another Agent's service (`service_not_owned`).
-Readiness for operators is `treer agent show <name>` with `interface.ui_path`,
-and the control plane iframe at `/interface/ui/`.
+Readiness for operators is `treer agent show <name>` with a verified
+Interface descriptor, and the control plane iframe at `/interface/ui/`.
 
-Do not put secrets in a launch profile. Do not use `--publish`. The start script
-registers `treer interface register --ui-path /` itself.
+Do not put secrets in a launch profile. Do not use `--publish`. The start
+script registers `treer interface register --ui-path /` with the required
+capabilities itself.

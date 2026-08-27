@@ -5,14 +5,16 @@ NS_PORT="${CODEX_AGENT_UI_PORT:-4173}"
 HEALTH="http://127.0.0.1:${NS_PORT}/api/health"
 SURFACE="http://127.0.0.1:${NS_PORT}/.treer/agent"
 BIND="http://127.0.0.1:${NS_PORT}/api/agents/bind"
+INSTANCE_ID="${CODEX_AGENT_UI_INSTANCE_ID:-codex-ui-${TREER_AGENT_ID:-local}-$$}"
 export CODEX_AGENT_UI_CWD="${CODEX_AGENT_UI_CWD:-$(pwd)}"
 export CODEX_AGENT_UI_WEB_DIST="${CODEX_AGENT_UI_WEB_DIST:-$ROOT/apps/web/dist}"
 export CODEX_AGENT_UI_PORT="$NS_PORT"
-export TREER_AIS_INSTANCE_ID="${TREER_AIS_INSTANCE_ID:-${TREER_AGENT_ID:-codex-ui}}"
+export CODEX_AGENT_UI_INSTANCE_ID="$INSTANCE_ID"
+export TREER_AIS_INSTANCE_ID="$INSTANCE_ID"
 
 export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 if command -v fnm >/dev/null 2>&1; then
-  eval "$(fnm env --shell=sh)"
+  eval "$(fnm env --shell=bash)"
 fi
 if command -v codex >/dev/null 2>&1; then
   export CODEX_BIN="$(command -v codex)"
@@ -59,14 +61,18 @@ PY
 
 register_ui() {
   if ! command -v treer >/dev/null 2>&1; then
-    echo "treer CLI is not on PATH; cannot register Agent UI" >&2
+    echo "treer CLI is not on PATH; cannot register Agent Interface" >&2
     exit 1
   fi
   treer interface register \
     --port "$NS_PORT" \
-    --instance-id "$TREER_AIS_INSTANCE_ID" \
+    --instance-id "$INSTANCE_ID" \
+    --capability prompt.submit \
+    --capability transcript.read \
+    --capability state.observe \
+    --capability abort \
     --ui-path /
-  echo "registered Treer Agent Interface on 127.0.0.1:${NS_PORT} with ui_path=/"
+  echo "registered Codex AIS $INSTANCE_ID on private port $NS_PORT"
 }
 
 keep_registered() {
@@ -76,7 +82,11 @@ keep_registered() {
     fi
     treer interface register \
       --port "$NS_PORT" \
-      --instance-id "$TREER_AIS_INSTANCE_ID" \
+      --instance-id "$INSTANCE_ID" \
+      --capability prompt.submit \
+      --capability transcript.read \
+      --capability state.observe \
+      --capability abort \
       --ui-path / >/dev/null 2>&1 || true
     sleep 20
     if [ "${1:-}" = "" ] && ! health_ok; then
@@ -118,6 +128,9 @@ fi
 start_server &
 SERVER_PID=$!
 cleanup() {
+  if command -v treer >/dev/null 2>&1; then
+    treer interface clear >/dev/null 2>&1 || true
+  fi
   kill "$SERVER_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM

@@ -16,23 +16,78 @@ const command = process.env.CODEX_BIN || "codex";
 
 const runtime = new CodexRuntime(command, cwd, process.env.CODEX_AGENT_UI_ROOT);
 const sockets = new Set<{ agentId: string; send: (data: string) => void }>();
+const completedOperations = new Map<string, number>();
 const AIS_PROTOCOL = "treer.agent-interface/v1";
-const aisInstanceId = process.env.TREER_AIS_INSTANCE_ID?.trim() || defaultAgentId();
 const aisUiPath = "/";
-const aisCapabilities: string[] = [];
+const aisCapabilities = ["prompt.submit", "transcript.read", "state.observe", "abort"];
+const processInstanceId =
+  process.env.CODEX_AGENT_UI_INSTANCE_ID?.trim()
+  || process.env.TREER_AIS_INSTANCE_ID?.trim()
+  || `codex-ui-${defaultAgentId()}`;
 
 function requestUrl(request: IncomingMessage) {
   return new URL(request.url ?? "/", "http://127.0.0.1");
+}
+
+function headerValue(request: IncomingMessage, name: string) {
+  const value = request.headers[name];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function agentIdFromRequest(request: IncomingMessage, body?: Record<string, unknown>) {
   const url = requestUrl(request);
   return resolveAgentId({
     query: url.searchParams.get("agent"),
-    header: typeof request.headers["x-treer-agent-id"] === "string" ? request.headers["x-treer-agent-id"] : null,
+    header: headerValue(request, "x-treer-agent-id") || null,
     body: typeof body?.agentId === "string" ? body.agentId : null,
     fallback: defaultAgentId(),
   });
+}
+
+function interfaceIdentity(request: IncomingMessage, body?: Record<string, unknown>) {
+  const agentId = agentIdFromRequest(request, body);
+  const instanceId = headerValue(request, "x-treer-interface-instance") || processInstanceId;
+  return { agentId, instanceId };
+}
+
+function runtimeStatus(agentId: string) {
+  const snapshot = runtime.snapshot();
+  const thread = runtime.threadForAgent(agentId) ?? snapshot.thread;
+  if (!snapshot.ready) {
+    return { status: "starting" as const, error: thread?.lastError ?? null };
+  }
+  if (thread?.status === "running") {
+    return { status: "working", error: thread.lastError };
+  }
+  if (thread?.status === "error") {
+    return { status: "blocked", error: thread.lastError };
+  }
+  return { status: "idle", error: thread?.lastError ?? null };
+}
+
+function transcriptPayload(request: IncomingMessage, url: URL) {
+  const { agentId, instanceId } = interfaceIdentity(request);
+  const thread = runtime.threadForAgent(agentId) ?? runtime.snapshot().thread;
+  const entries = (thread?.turns ?? []).flatMap((turn) =>
+    turn.items.map((item, index) => ({
+      id: item.id || `${turn.id}:${index}`,
+      kind: item.kind,
+      role: item.kind === "userMessage" ? "user" : item.kind === "agentMessage" ? "assistant" : null,
+      content: item.text,
+      created_at: turn.startedAt,
+    })),
+  );
+  const cursor = Math.max(0, Number.parseInt(url.searchParams.get("cursor") || "0", 10) || 0);
+  const limit = Math.min(1000, Math.max(1, Number.parseInt(url.searchParams.get("limit") || "100", 10) || 100));
+  const page = entries.slice(cursor, cursor + limit);
+  const next = cursor + page.length;
+  return {
+    agent_id: agentId,
+    interface_instance_id: instanceId,
+    cursor: String(cursor),
+    next_cursor: next < entries.length ? String(next) : null,
+    entries: page,
+  };
 }
 
 function mime(file: string) {
@@ -200,15 +255,82 @@ runtime.on("log", (message) => {
 
 const server = createServer(async (request, response) => {
   const method = request.method ?? "GET";
+  const url = requestUrl(request);
   const path = requestPath(request.url ?? "/");
   try {
     if (path === "/v1/manifest" && (method === "GET" || method === "HEAD")) {
+      const { instanceId } = interfaceIdentity(request);
       send(response, 200, {
         protocol: AIS_PROTOCOL,
-        instance_id: aisInstanceId,
+        instance_id: instanceId,
         capabilities: aisCapabilities,
         ui_path: aisUiPath,
       });
+      return;
+    }
+    if (path === "/v1/health" && (method === "GET" || method === "HEAD")) {
+      const snapshot = runtime.snapshot();
+      const { instanceId } = interfaceIdentity(request);
+      send(response, snapshot.ready ? 200 : 503, {
+        instance_id: instanceId,
+        status: snapshot.ready ? "ok" : "starting",
+      });
+      return;
+    }
+    if (path === "/v1/status" && method === "GET") {
+      const { agentId, instanceId } = interfaceIdentity(request);
+      await runtime.bindAgent(agentId);
+      const current = runtimeStatus(agentId);
+      send(response, 200, {
+        agent_id: agentId,
+        interface_instance_id: instanceId,
+        status: current.status,
+        busy: current.status === "working",
+        error: current.error,
+      });
+      return;
+    }
+    if (path === "/v1/transcript" && method === "GET") {
+      const { agentId } = interfaceIdentity(request);
+      await runtime.bindAgent(agentId);
+      send(response, 200, transcriptPayload(request, url));
+      return;
+    }
+    if (path === "/v1/prompts" && method === "POST") {
+      const body = await readJson(request);
+      const { agentId, instanceId } = interfaceIdentity(request, body);
+      const operationId = typeof body.operation_id === "string" ? body.operation_id.trim() : "";
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!operationId || !text) {
+        send(response, 400, { error: "operation_id and text are required" });
+        return;
+      }
+      const opKey = `${agentId}:${operationId}`;
+      if (completedOperations.has(opKey)) {
+        send(response, 202, { accepted: true, duplicate: true, operation_id: operationId, agent_id: agentId, interface_instance_id: instanceId });
+        return;
+      }
+      completedOperations.set(opKey, Date.now());
+      try {
+        const thread = await runtime.bindAgent(agentId);
+        await runtime.prompt(text, thread.id);
+      } catch (error) {
+        completedOperations.delete(opKey);
+        throw error;
+      }
+      while (completedOperations.size > 1024) {
+        completedOperations.delete(completedOperations.keys().next().value!);
+      }
+      send(response, 202, { accepted: true, operation_id: operationId, agent_id: agentId, interface_instance_id: instanceId });
+      return;
+    }
+    if (path === "/v1/abort" && method === "POST") {
+      const { agentId } = interfaceIdentity(request);
+      const thread = runtime.threadForAgent(agentId);
+      if (thread) {
+        await runtime.interrupt(thread.id);
+      }
+      send(response, 202, { accepted: true });
       return;
     }
     if (path === "/api/health" || path === "/.treer/agent") {
@@ -219,7 +341,7 @@ const server = createServer(async (request, response) => {
         ready: snapshot.ready,
         title: snapshot.thread?.title ?? "Codex",
         ui: true,
-        capabilities: ["ui"],
+        capabilities: aisCapabilities,
       };
       if (path === "/api/health") {
         send(response, snapshot.ready ? 200 : 503, { ok: snapshot.ready, ready: snapshot.ready });

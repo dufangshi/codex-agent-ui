@@ -21,7 +21,9 @@ UI`) so Launch can create another Agent. Do not install the recipe again for
 another thread.
 
 A clone can start without building thread-ui: `apps/web/dist` is tracked.
-`/.treer/agent` returns HTTP 200 only after `codex app-server` is ready.
+The private listener exposes `treer.agent-interface/v1` (`/v1/manifest`,
+`/v1/status`, `/v1/prompts`, `/v1/transcript`, `/v1/abort`) plus the browser
+page. `/.treer/agent` returns HTTP 200 only after `codex app-server` is ready.
 
 ```bash
 git clone https://github.com/dufangshi/codex-agent-ui.git
@@ -40,5 +42,7 @@ CODEX_AGENT_UI_CWD="$PWD" pnpm start
 Listens on `127.0.0.1:4173`. Pages use relative `api/` and `ws` URLs plus
 `<base href="./">` so Treer can iframe them under
 `/api/workspaces/.../agents/.../interface/ui/`. The start script registers
-that page with `treer interface register --ui-path /`. `ui_path` is the HTTP
-path on the Agent's private loopback server (`/`), not a git URL.
+that page with `treer interface register --ui-path /` and the prompt,
+transcript, state, and abort capabilities. `ui_path` is the HTTP path on the
+Agent's private loopback server (`/`), not a git URL. Current fnm only
+accepts `--shell=bash` (not `sh`).

@@ -172,8 +172,9 @@ def agent_record():
         return None
     return payload
 
+required = {"prompt.submit", "transcript.read", "state.observe", "abort"}
 deadline = time.time() + 300
-last = ""
+last = "not visible"
 while time.time() < deadline:
     agent = agent_record()
     if not agent:
@@ -181,20 +182,21 @@ while time.time() < deadline:
         time.sleep(2)
         continue
     record = agent.get("agent") if isinstance(agent.get("agent"), dict) else agent
-    agent_id = record.get("agent_id") or record.get("id")
     status = record.get("status")
     if status in {"failed", "exited"}:
         raise SystemExit(f"agent {name} entered {status}")
-    interface = record.get("interface") if isinstance(record.get("interface"), dict) else {}
-    ui_path = interface.get("ui_path")
-    protocol = interface.get("protocol")
-    if protocol == "treer.agent-interface/v1" and ui_path:
+    interface = record.get("interface") if isinstance(record.get("interface"), dict) else None
+    capabilities = set(interface.get("capabilities") or []) if interface else set()
+    if (
+        interface
+        and interface.get("protocol") == "treer.agent-interface/v1"
+        and interface.get("ui_path") == "/"
+        and required.issubset(capabilities)
+    ):
         print(json.dumps({"ok": True, "agent": record, "interface": interface}, indent=2))
         raise SystemExit(0)
-    last = (
-        f"agent {name} status={status} protocol={protocol or '-'} ui_path={ui_path or '-'}"
-    )
+    last = f"status={status}, interface={interface}"
     time.sleep(2)
 
-raise SystemExit(f"timed out waiting for {name} UI readiness: {last}")
+raise SystemExit(f"timed out waiting for {name}: {last}")
 PY
