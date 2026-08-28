@@ -47,7 +47,7 @@ const capabilities: AgentProviderCapabilitiesDto = {
     hostConfigFiles: false,
     providerSettings: false,
   },
-  usage: { contextWindow: false, tokenUsage: false, costUsd: false },
+  usage: { contextWindow: true, tokenUsage: true, costUsd: false },
 };
 
 export function App() {
@@ -206,6 +206,7 @@ export function App() {
             model: detail?.thread.model,
             reasoningEffort: detail?.thread.reasoningEffort,
             modelOptions: state?.modelOptions ?? [],
+            contextUsage: detail?.thread.contextUsage,
             capabilities,
             collaborationMode: "default",
             canInterrupt,

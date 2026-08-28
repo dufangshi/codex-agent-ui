@@ -176,6 +176,7 @@ function toThreadDto(thread: ThreadState) {
     updatedAt: thread.updatedAt,
     lastTurnStartedAt: thread.turns.at(-1)?.startedAt ?? null,
     lastTurnCompletedAt: null,
+    contextUsage: thread.contextUsage,
   };
 }
 

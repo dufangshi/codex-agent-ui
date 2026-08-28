@@ -46,6 +46,13 @@ The private listener exposes `treer.agent-interface/v1` plus the thread UI.
 The start script registers `treer interface register --ui-path /` with prompt,
 transcript, state, and abort capabilities.
 
+The composer maps ACP session settings onto remoteCodex's model picker,
+reasoning-effort control, and context-window meter. Codex and Cursor advertise
+[session config options](https://agentclientprotocol.com/protocol/session-config-options);
+Grok still uses the unstable `models` payload plus `session/set_model` /
+`session/set_mode`. `usage_update` fills tokens used / window size when the
+agent reports it; otherwise the UI seeds the window from the selected model.
+
 Treer Host processes do not inherit an interactive shell, so the UI loads
 harness credentials from the CLI's usual files (`~/.grok/env`,
 `~/.codex/auth.json`) and prefers non-interactive ACP auth (`xai.api_key`,

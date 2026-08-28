@@ -6,6 +6,19 @@ import type { ChildProcess } from "node:child_process";
 
 import * as acp from "@agentclientprotocol/sdk";
 
+import {
+  describeAcpConfigOptions,
+  mapAcpSessionPayload,
+  mapAcpUsageUpdate,
+  resolveAcpThoughtValue,
+  rewriteModelIdForEffort,
+  seedContextUsage,
+  unavailableContextUsage,
+  withCurrentModel,
+  type AcpSessionConfig,
+  type AcpSessionPayload,
+  type ThreadContextUsage,
+} from "./acp-config.js";
 import { loadAcpSpawnEnvironment, selectAcpAuthMethodIds } from "./acp-environment.js";
 import { AcpTurnMapper } from "./acp-mapper.js";
 import { AcpTerminalService } from "./acp-terminal.js";
@@ -28,12 +41,15 @@ export interface ThreadState {
   createdAt: string;
   updatedAt: string;
   turns: TurnDto[];
+  contextUsage: ThreadContextUsage;
 }
 
 interface SessionState {
   providerSessionId: string;
   mapper: AcpTurnMapper | null;
   turnStartedAt: string | null;
+  config: AcpSessionConfig;
+  payload: AcpSessionPayload;
 }
 
 export class AcpRuntime extends EventEmitter {
@@ -165,16 +181,7 @@ export class AcpRuntime extends EventEmitter {
       this.emit("log", "ACP authenticate skipped; trying session/new with existing CLI login");
     }
     this.ready = true;
-    this.models = [{
-      id: "default",
-      model: "default",
-      displayName: `${this.displayName} default`,
-      description: "",
-      isDefault: true,
-      hidden: false,
-      supportedReasoningEfforts: [],
-      defaultReasoningEffort: null,
-    }];
+    this.models = [];
     this.emit("state");
   }
 
@@ -199,7 +206,7 @@ export class AcpRuntime extends EventEmitter {
       id,
       title: input.title?.trim() || basename(cwd) || this.displayName,
       cwd,
-      model: input.model && input.model !== "default" ? input.model : null,
+      model: null,
       reasoningEffort: null,
       status: "idle",
       activeTurnId: null,
@@ -207,14 +214,22 @@ export class AcpRuntime extends EventEmitter {
       createdAt: now,
       updatedAt: now,
       turns: [],
+      contextUsage: unavailableContextUsage(now),
     };
     this.threads.set(id, thread);
-    this.agentSessions.set(id, {
+    const session: SessionState = {
       providerSessionId: response.sessionId,
       mapper: null,
       turnStartedAt: null,
-    });
+      config: mapAcpSessionPayload({}),
+      payload: {},
+    };
+    this.agentSessions.set(id, session);
+    this.applySessionPayload(thread, session, sessionPayloadFromNew(response));
     this.currentId = id;
+    if (input.model && input.model !== "default" && input.model !== thread.model) {
+      await this.updateSettings({ model: input.model }, id);
+    }
     this.emit("state");
     return thread;
   }
@@ -273,7 +288,29 @@ export class AcpRuntime extends EventEmitter {
     });
   }
 
-  async updateSettings(_input?: { model?: string; reasoningEffort?: string | null }, _threadId?: string) {
+  async updateSettings(input: { model?: string; reasoningEffort?: string | null } = {}, threadId?: string) {
+    const thread = threadId ? this.requireThread(threadId) : this.current;
+    if (!thread) throw new Error("ACP is not ready");
+    const session = this.agentSessions.get(thread.id);
+    if (!session) throw new Error("ACP session is not bound");
+    if (typeof input.model === "string" && input.model.trim()) {
+      const nextModel = input.model.trim();
+      if (!session.config.models.some((entry) => entry.model === nextModel) && session.config.models.length > 0) {
+        throw new Error(`unknown model: ${nextModel}`);
+      }
+      if (nextModel !== thread.model) {
+        await this.writeModel(session, thread, nextModel);
+      }
+    }
+    if (input.reasoningEffort !== undefined) {
+      const thoughtValue = resolveAcpThoughtValue(session.config, input.reasoningEffort);
+      const currentThoughtValue = session.config.thoughtValues.find((entry) => (
+        entry.effort === thread.reasoningEffort
+      ))?.value ?? null;
+      if (thoughtValue && thoughtValue !== currentThoughtValue) {
+        await this.writeThought(session, thread, thoughtValue);
+      }
+    }
     this.emit("state");
   }
 
@@ -322,16 +359,116 @@ export class AcpRuntime extends EventEmitter {
 
   private handleUpdate(notification: acp.SessionNotification) {
     for (const [agentId, session] of this.agentSessions) {
-      if (session.providerSessionId !== notification.sessionId || !session.mapper) continue;
-      session.mapper.apply(notification.update);
+      if (session.providerSessionId !== notification.sessionId) continue;
       const thread = this.threads.get(agentId);
       if (!thread) continue;
+      const update = notification.update;
+      if (update.sessionUpdate === "config_option_update") {
+        this.applySessionPayload(thread, session, {
+          ...session.payload,
+          configOptions: update.configOptions,
+        });
+        this.emit("state");
+        continue;
+      }
+      if (update.sessionUpdate === "usage_update") {
+        thread.contextUsage = mapAcpUsageUpdate(update);
+        thread.updatedAt = new Date().toISOString();
+        this.emit("state");
+        continue;
+      }
+      if (!session.mapper) continue;
+      session.mapper.apply(update);
       const turn = session.mapper.snapshot("inProgress");
       turn.startedAt = session.turnStartedAt;
       const index = thread.turns.findIndex((entry) => entry.id === session.mapper?.turnId);
       if (index >= 0) thread.turns[index] = turn;
       thread.updatedAt = new Date().toISOString();
       this.emit("state");
+    }
+  }
+
+  private applySessionPayload(
+    thread: ThreadState,
+    session: SessionState,
+    payload: AcpSessionPayload,
+  ) {
+    const config = mapAcpSessionPayload(payload);
+    session.payload = payload;
+    session.config = config;
+    this.models = config.models;
+    thread.model = config.model;
+    thread.reasoningEffort = config.reasoningEffort;
+    if (thread.contextUsage.availability !== "available" || !thread.contextUsage.modelContextWindow) {
+      thread.contextUsage = seedContextUsage(config.modelContextWindow, thread.updatedAt);
+    } else if (config.modelContextWindow && config.modelContextWindow !== thread.contextUsage.modelContextWindow) {
+      thread.contextUsage = mapAcpUsageUpdate({
+        used: thread.contextUsage.tokensInContextWindow ?? 0,
+        size: config.modelContextWindow,
+      }, new Date().toISOString());
+    }
+    thread.updatedAt = new Date().toISOString();
+    this.emit(
+      "log",
+      `ACP config: model=${config.model ?? "(none)"} effort=${config.reasoningEffort ?? "auto"} via ${config.modelWrite ?? "none"}/${config.thoughtWrite ?? "none"} options=${describeAcpConfigOptions(config.options)}`,
+    );
+  }
+
+  private async writeModel(session: SessionState, thread: ThreadState, nextModel: string) {
+    const context = this.requireContext();
+    if (session.config.modelWrite === "config" && session.config.modelConfigId) {
+      const response = await context.request(acp.methods.agent.session.setConfigOption, {
+        sessionId: session.providerSessionId,
+        configId: session.config.modelConfigId,
+        value: nextModel,
+      });
+      this.applySessionPayload(thread, session, {
+        ...session.payload,
+        configOptions: response.configOptions,
+        models: withCurrentModel(session.payload, nextModel).models ?? session.payload.models,
+      });
+      return;
+    }
+    if (session.config.modelWrite === "set_model") {
+      await context.request("session/set_model" as never, {
+        sessionId: session.providerSessionId,
+        modelId: nextModel,
+      } as never);
+      this.applySessionPayload(thread, session, withCurrentModel(session.payload, nextModel));
+      return;
+    }
+    throw new Error(`unknown model: ${nextModel}`);
+  }
+
+  private async writeThought(session: SessionState, thread: ThreadState, thoughtValue: string) {
+    const context = this.requireContext();
+    if (session.config.thoughtWrite === "config" && session.config.thoughtConfigId) {
+      const response = await context.request(acp.methods.agent.session.setConfigOption, {
+        sessionId: session.providerSessionId,
+        configId: session.config.thoughtConfigId,
+        value: thoughtValue,
+      });
+      this.applySessionPayload(thread, session, {
+        ...session.payload,
+        configOptions: response.configOptions,
+      });
+      return;
+    }
+    if (session.config.thoughtWrite === "set_mode") {
+      await context.request(acp.methods.agent.session.setMode, {
+        sessionId: session.providerSessionId,
+        modeId: thoughtValue,
+      });
+      const current = currentLegacyFor(session.payload, thread.model);
+      if (current?._meta) {
+        current._meta.reasoningEffort = thoughtValue;
+      }
+      this.applySessionPayload(thread, session, session.payload);
+      return;
+    }
+    if (session.config.thoughtWrite === "model_id" && thread.model) {
+      const nextModel = rewriteModelIdForEffort(thread.model, thoughtValue);
+      await this.writeModel(session, thread, nextModel);
     }
   }
 
@@ -354,6 +491,21 @@ export class AcpRuntime extends EventEmitter {
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     return thread;
   }
+}
+
+function sessionPayloadFromNew(response: acp.NewSessionResponse): AcpSessionPayload {
+  const extra = response as acp.NewSessionResponse & { models?: AcpSessionPayload["models"] };
+  return {
+    configOptions: response.configOptions ?? [],
+    models: extra.models ?? null,
+    modes: response.modes ?? null,
+    _meta: response._meta ?? null,
+  };
+}
+
+function currentLegacyFor(payload: AcpSessionPayload, modelId: string | null) {
+  const available = payload.models?.availableModels ?? [];
+  return available.find((entry) => entry.modelId === modelId) ?? available[0] ?? null;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
