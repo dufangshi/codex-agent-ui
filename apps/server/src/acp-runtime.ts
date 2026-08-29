@@ -29,6 +29,13 @@ import { parseCommandLine, spawnProcess } from "./process.js";
 
 export { ThreadPathError };
 
+export class AcpAuthenticationRequiredError extends Error {
+  constructor(message = "ACP authentication is required; run /login to continue") {
+    super(message);
+    this.name = "AcpAuthenticationRequiredError";
+  }
+}
+
 export interface ThreadState {
   id: string;
   title: string;
@@ -57,6 +64,11 @@ export class AcpRuntime extends EventEmitter {
   private context: acp.ClientContext | null = null;
   private connection: acp.ClientConnection | null = null;
   private ready = false;
+  private authenticated = false;
+  private authRequired = false;
+  private authMethods: string[] = [];
+  private authError: string | null = null;
+  private startPromise: Promise<void> | null = null;
   private readonly threads = new Map<string, ThreadState>();
   private readonly agentSessions = new Map<string, SessionState>();
   private currentId: string | null = null;
@@ -69,6 +81,7 @@ export class AcpRuntime extends EventEmitter {
     readonly cwd: string,
     root?: string,
     private readonly displayName = "ACP Agent",
+    private readonly harnessId = "codex",
   ) {
     super();
     this.root = inferWorkspaceRoot(cwd, root);
@@ -90,6 +103,14 @@ export class AcpRuntime extends EventEmitter {
 
   async start() {
     if (this.ready) return;
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startTransport().finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
+  }
+
+  private async startTransport() {
     const parsed = parseCommandLine(this.command);
     const loaded = await loadAcpSpawnEnvironment();
     this.emit("log", `ACP env sources: ${loaded.sources.join(", ") || "process env"}`);
@@ -106,7 +127,11 @@ export class AcpRuntime extends EventEmitter {
       if (text.trim()) this.emit("log", text.trim());
     });
     child.on("exit", () => {
+      if (this.child !== child) return;
       this.ready = false;
+      this.authenticated = false;
+      this.authRequired = false;
+      this.emit("state");
     });
     if (!child.stdin || !child.stdout) {
       throw new Error("ACP agent did not expose stdio");
@@ -149,14 +174,20 @@ export class AcpRuntime extends EventEmitter {
       clientInfo: { name: "treer-acp-ui", title: "Treer ACP UI", version: "0.1.0" },
     });
     const methods = initialized.authMethods ?? [];
+    this.authMethods = methods.map((entry) => entry.id);
     this.emit("log", `ACP auth methods: ${methods.map((entry) => entry.id).join(", ") || "(none)"}`);
     const ordered = selectAcpAuthMethodIds({
+      harnessId: this.harnessId,
       advertised: methods,
       env: loaded.env,
       hasChatGptSession: loaded.hasChatGptSession,
+      hasGrokSession: loaded.hasGrokSession,
+      hasCursorSession: loaded.hasCursorSession,
+      hasClaudeSession: loaded.hasClaudeSession,
     });
     this.emit("log", `ACP auth order: ${ordered.join(", ") || "(skip)"}`);
-    let authenticated = ordered.length === 0;
+    let authenticated = methods.length === 0;
+    let lastAuthError: string | null = null;
     for (const methodId of ordered) {
       try {
         await withTimeout(
@@ -171,22 +202,28 @@ export class AcpRuntime extends EventEmitter {
         authenticated = true;
         break;
       } catch (error) {
-        this.emit("log", `ACP auth ${methodId} failed: ${error instanceof Error ? error.message : String(error)}`);
+        lastAuthError = error instanceof Error ? error.message : String(error);
+        this.emit("log", `ACP auth ${methodId} failed: ${lastAuthError}`);
       }
     }
-    if (!authenticated && methods.length > 0 && ordered.length > 0) {
-      throw new Error("ACP agent requires authentication, but no advertised method succeeded");
-    }
     if (!authenticated) {
-      this.emit("log", "ACP authenticate skipped; trying session/new with existing CLI login");
+      this.emit("log", "ACP is online but needs login; use /login in the Agent UI");
     }
     this.ready = true;
+    this.authenticated = authenticated;
+    this.authRequired = !authenticated;
+    this.authError = lastAuthError;
     this.models = [];
     this.emit("state");
   }
 
   async bindAgent(agentId: string, input: { title?: string; cwd?: string; model?: string } = {}) {
     await this.start();
+    if (this.authRequired) {
+      throw new AcpAuthenticationRequiredError(this.authError
+        ? `ACP authentication is required: ${this.authError}`
+        : undefined);
+    }
     const id = agentId.trim() || defaultAgentId();
     const existing = this.threads.get(id);
     if (existing) {
@@ -196,11 +233,24 @@ export class AcpRuntime extends EventEmitter {
     }
     const cwd = resolve(input.cwd || this.cwd);
     const context = this.requireContext();
-    const response = await context.request(acp.methods.agent.session.new, {
-      cwd,
-      mcpServers: [],
-      _meta: { yoloMode: true },
-    });
+    let response: acp.NewSessionResponse;
+    try {
+      response = await context.request(acp.methods.agent.session.new, {
+        cwd,
+        mcpServers: [],
+        _meta: { yoloMode: true },
+      });
+      this.authenticated = true;
+      this.authRequired = false;
+      this.authError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.authenticated = false;
+      this.authRequired = true;
+      this.authError = message;
+      this.emit("state");
+      throw new AcpAuthenticationRequiredError(message);
+    }
     const now = new Date().toISOString();
     const thread: ThreadState = {
       id,
@@ -322,11 +372,36 @@ export class AcpRuntime extends EventEmitter {
     this.context = null;
     this.child = null;
     this.ready = false;
+    this.authenticated = false;
+    this.authRequired = false;
+    this.authMethods = [];
+    this.authError = null;
+    this.startPromise = null;
+  }
+
+  async restartAfterLogin() {
+    await this.stop();
+    this.threads.clear();
+    this.agentSessions.clear();
+    this.currentId = null;
+    this.models = [];
+    await this.start();
   }
 
   snapshot() {
     return {
       ready: this.ready,
+      auth: {
+        status: !this.ready
+          ? "starting" as const
+          : this.authenticated
+            ? "authenticated" as const
+            : this.authRequired
+              ? "required" as const
+              : "unknown" as const,
+        methods: this.authMethods,
+        error: this.authError,
+      },
       cwd: this.cwd,
       root: this.root,
       currentId: this.currentId,

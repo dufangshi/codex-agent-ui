@@ -31,8 +31,8 @@ git clone https://github.com/dufangshi/codex-agent-ui.git
 ```
 
 `apply.sh` without `--agent` still installs every harness whose base CLI is on
-PATH. Installer Agents should not use that path: they ask first, then pass
-`--agent`.
+PATH. An explicit `--agent` installs a missing base CLI as well as its ACP
+adapter, then starts the UI even when that CLI has not been authenticated yet.
 
 ## Run locally
 
@@ -54,7 +54,13 @@ Grok still uses the unstable `models` payload plus `session/set_model` /
 agent reports it; otherwise the UI seeds the window from the selected model.
 
 Treer Host processes do not inherit an interactive shell, so the UI loads
-harness credentials from the CLI's usual files (`~/.grok/env`,
-`~/.codex/auth.json`) and prefers non-interactive ACP auth (`xai.api_key`,
-`cached_token`, `api-key`, `cursor_login`). Browser/ChatGPT login is only
-used when a local subscription session already exists.
+harness credentials from the CLI's usual files and only attempts an ACP auth
+method when the matching harness already has credentials. Missing auth no
+longer prevents the Agent Interface from registering. Use `/login` from the
+composer toolbox (or the sign-in panel) to start the harness CLI's OAuth flow,
+open the returned link, and submit a response code when the CLI requests one.
+
+Inside an Apple Container Machine, the start scripts automatically reuse
+mounted host state from `/Users/<user>` for Codex, Claude, Cursor, Pi, and
+OpenCode. Grok shares `auth.json`, `config.toml`, and `env` but keeps its
+platform-specific `~/.grok/bin` local to the Linux machine.

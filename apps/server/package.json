@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "test": "tsx --test src/path.test.ts src/agent-id.test.ts src/acp-catalog.test.ts src/acp-environment.test.ts src/acp-config.test.ts",
+    "test": "tsx --test src/path.test.ts src/agent-id.test.ts src/acp-catalog.test.ts src/acp-environment.test.ts src/acp-login.test.ts src/acp-config.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -4,6 +4,8 @@ ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 ACP_AGENT="${ACP_AGENT:-codex}"
 NS_PORT="${CODEX_AGENT_UI_PORT:-}"
 
+"$ROOT/scripts/map-host-harness-state.sh"
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --agent)
@@ -69,7 +71,7 @@ export CODEX_AGENT_UI_PORT="$NS_PORT"
 export CODEX_AGENT_UI_INSTANCE_ID="$INSTANCE_ID"
 export TREER_AIS_INSTANCE_ID="$INSTANCE_ID"
 
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+export PATH="${HOME}/.grok/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --shell=bash)"
 fi

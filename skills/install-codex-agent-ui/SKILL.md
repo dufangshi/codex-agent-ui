@@ -17,8 +17,8 @@ test -n "${TREER_AGENT_ID:-}" && test -n "${TREER_AGENT_SERVER_URL:-}"
 treer whoami
 ```
 
-Need `git`, `node`, `npm`, `curl`, and `treer` on PATH. Install missing harness
-CLIs only when the user asked for that harness:
+Need `git`, `node`, `npm`, `curl`, and `treer` on PATH. Passing an explicit
+`--agent` installs that harness CLI when it is missing:
 
 - Codex: `npm install -g @openai/codex`
 - Claude Code: official `claude` CLI
@@ -68,4 +68,6 @@ Stop only when all of these are true for each created Agent:
 5. `treer agent admin profile show` returns `ACP Codex`, `ACP Grok`,
    `ACP Cursor`, and/or `ACP Claude` for the harnesses that were installed.
 
+The created interface is allowed to be unauthenticated. It must still be
+online; the human can use `/login` in its slash toolbox to complete OAuth.
 Do not put secrets in a launch profile. Do not use `--publish`.

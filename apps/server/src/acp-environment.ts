@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 
 export interface AdvertisedAuthMethod {
   id: string;
@@ -11,6 +11,9 @@ export interface AcpEnvironmentLoad {
   env: NodeJS.ProcessEnv;
   sources: string[];
   hasChatGptSession: boolean;
+  hasGrokSession: boolean;
+  hasCursorSession: boolean;
+  hasClaudeSession: boolean;
 }
 
 const INTERACTIVE_AUTH_IDS = new Set(["grok.com", "browser", "terminal"]);
@@ -42,9 +45,13 @@ function firstPresent(...values: Array<string | undefined>) {
 }
 
 export function selectAcpAuthMethodIds(input: {
+  harnessId: string;
   advertised: AdvertisedAuthMethod[];
   env: NodeJS.ProcessEnv;
   hasChatGptSession?: boolean;
+  hasGrokSession?: boolean;
+  hasCursorSession?: boolean;
+  hasClaudeSession?: boolean;
 }) {
   const advertised = input.advertised.filter((entry) => {
     if (!entry?.id) return false;
@@ -55,17 +62,45 @@ export function selectAcpAuthMethodIds(input: {
   const has = (id: string) => advertisedIds.includes(id);
   const hasXai = Boolean(firstPresent(input.env.XAI_API_KEY, input.env.GROK_CODE_XAI_API_KEY));
   const hasOpenAi = Boolean(firstPresent(input.env.OPENAI_API_KEY, input.env.CODEX_API_KEY));
-  const ordered = [
-    has("none") ? "none" : null,
-    hasXai && (has("xai.api_key") || advertisedIds.length === 0) ? "xai.api_key" : null,
-    has("cached_token") || advertisedIds.length === 0 ? "cached_token" : null,
-    has("cursor_login") ? "cursor_login" : null,
-    hasOpenAi && (has("api-key") || advertisedIds.length === 0) ? "api-key" : null,
-    input.hasChatGptSession && (has("chat-gpt") || has("chatgpt"))
-      ? (has("chat-gpt") ? "chat-gpt" : "chatgpt")
-      : null,
-    ...advertisedIds.filter((id) => id !== "chat-gpt" && id !== "chatgpt"),
-  ];
+  const hasAnthropic = Boolean(firstPresent(
+    input.env.ANTHROPIC_API_KEY,
+    input.env.CLAUDE_CODE_OAUTH_TOKEN,
+  ));
+  let candidates: Array<string | null>;
+  switch (input.harnessId) {
+    case "grok":
+      candidates = [
+        has("none") ? "none" : null,
+        hasXai && has("xai.api_key") ? "xai.api_key" : null,
+        input.hasGrokSession && has("cached_token") ? "cached_token" : null,
+      ];
+      break;
+    case "codex":
+      candidates = [
+        has("none") ? "none" : null,
+        hasOpenAi && has("api-key") ? "api-key" : null,
+        input.hasChatGptSession && (has("chat-gpt") || has("chatgpt"))
+          ? (has("chat-gpt") ? "chat-gpt" : "chatgpt")
+          : null,
+      ];
+      break;
+    case "cursor":
+      candidates = [
+        has("none") ? "none" : null,
+        input.hasCursorSession && has("cursor_login") ? "cursor_login" : null,
+      ];
+      break;
+    case "claude":
+      candidates = [
+        has("none") ? "none" : null,
+        (input.hasClaudeSession || hasAnthropic) && has("cached_token") ? "cached_token" : null,
+        hasAnthropic && has("api-key") ? "api-key" : null,
+      ];
+      break;
+    default:
+      candidates = [has("none") ? "none" : null];
+  }
+  const ordered = candidates;
   return ordered.filter((id, index): id is string =>
     Boolean(id) && ordered.indexOf(id) === index,
   );
@@ -79,6 +114,15 @@ async function readText(path: string) {
   }
 }
 
+async function pathExists(path: string) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function loadAcpSpawnEnvironment(
   inherited: NodeJS.ProcessEnv = process.env,
   home = inherited.HOME || homedir(),
@@ -86,6 +130,9 @@ export async function loadAcpSpawnEnvironment(
   const env: NodeJS.ProcessEnv = { ...inherited };
   const sources: string[] = [];
   let hasChatGptSession = false;
+  const hasGrokSession = await pathExists(join(home, ".grok", "auth.json"));
+  const hasCursorSession = await pathExists(join(home, ".cursor", "cli-config.json"));
+  const hasClaudeSession = await pathExists(join(home, ".claude", ".credentials.json"));
 
   const grokEnvPath = join(home, ".grok", "env");
   const grokEnvText = await readText(grokEnvPath);
@@ -123,5 +170,12 @@ export async function loadAcpSpawnEnvironment(
     }
   }
 
-  return { env, sources, hasChatGptSession };
+  return {
+    env,
+    sources,
+    hasChatGptSession,
+    hasGrokSession,
+    hasCursorSession,
+    hasClaudeSession,
+  };
 }

@@ -6,7 +6,13 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
 import { resolveAcpAgent } from "./acp-catalog.js";
-import { AcpRuntime, ThreadPathError, type ThreadState } from "./acp-runtime.js";
+import { AcpLoginService } from "./acp-login.js";
+import {
+  AcpAuthenticationRequiredError,
+  AcpRuntime,
+  ThreadPathError,
+  type ThreadState,
+} from "./acp-runtime.js";
 import { defaultAgentId, resolveAgentId } from "./agent-id.js";
 
 const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -16,7 +22,17 @@ const cwd = resolve(process.env.CODEX_AGENT_UI_CWD || process.cwd());
 const acpAgent = resolveAcpAgent(process.env.ACP_AGENT || "codex");
 const command = process.env.ACP_COMMAND || acpAgent.serverCommand;
 
-const runtime = new AcpRuntime(command, cwd, process.env.CODEX_AGENT_UI_ROOT, acpAgent.displayName);
+const runtime = new AcpRuntime(
+  command,
+  cwd,
+  process.env.CODEX_AGENT_UI_ROOT,
+  acpAgent.displayName,
+  acpAgent.id,
+);
+const login = new AcpLoginService(acpAgent.id, cwd, async (agentId) => {
+  await runtime.restartAfterLogin();
+  await runtime.bindAgent(agentId);
+});
 const sockets = new Set<{ agentId: string; send: (data: string) => void }>();
 const completedOperations = new Map<string, number>();
 const AIS_PROTOCOL = "treer.agent-interface/v1";
@@ -57,6 +73,9 @@ function runtimeStatus(agentId: string) {
   const thread = runtime.threadForAgent(agentId) ?? snapshot.thread;
   if (!snapshot.ready) {
     return { status: "starting" as const, error: thread?.lastError ?? null };
+  }
+  if (snapshot.auth.status === "required") {
+    return { status: "blocked" as const, error: snapshot.auth.error ?? "Authentication required" };
   }
   if (thread?.status === "running") {
     return { status: "working", error: thread.lastError };
@@ -187,6 +206,12 @@ function statePayload(agentId = defaultAgentId()) {
   const dto = current ? toThreadDto(current) : null;
   return {
     ready: snapshot.ready,
+    auth: {
+      harnessId: acpAgent.id,
+      displayName: acpAgent.displayName,
+      ...snapshot.auth,
+      login: login.snapshot(),
+    },
     cwd: snapshot.cwd,
     root: snapshot.root,
     agentId,
@@ -194,7 +219,7 @@ function statePayload(agentId = defaultAgentId()) {
       state: snapshot.ready ? "ready" : "starting",
       transport: "stdio",
       lastStartedAt: now,
-      lastError: current?.lastError ?? null,
+      lastError: current?.lastError ?? snapshot.auth.error ?? null,
       restartCount: 0,
     },
     modelOptions: snapshot.models,
@@ -239,6 +264,9 @@ function clientErrorStatus(error: unknown) {
   if (error instanceof ThreadPathError) {
     return 400;
   }
+  if (error instanceof AcpAuthenticationRequiredError) {
+    return 401;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (
     message.startsWith("unknown model:") ||
@@ -252,6 +280,7 @@ function clientErrorStatus(error: unknown) {
 }
 
 runtime.on("state", broadcast);
+login.on("state", broadcast);
 runtime.on("log", (message) => {
   console.log(`[codex] ${message}`);
 });
@@ -282,7 +311,6 @@ const server = createServer(async (request, response) => {
     }
     if (path === "/v1/status" && method === "GET") {
       const { agentId, instanceId } = interfaceIdentity(request);
-      await runtime.bindAgent(agentId);
       const current = runtimeStatus(agentId);
       send(response, 200, {
         agent_id: agentId,
@@ -294,8 +322,6 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (path === "/v1/transcript" && method === "GET") {
-      const { agentId } = interfaceIdentity(request);
-      await runtime.bindAgent(agentId);
       send(response, 200, transcriptPayload(request, url));
       return;
     }
@@ -306,6 +332,11 @@ const server = createServer(async (request, response) => {
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (!operationId || !text) {
         send(response, 400, { error: "operation_id and text are required" });
+        return;
+      }
+      if (text === "/login") {
+        await login.start(agentId);
+        send(response, 202, { accepted: true, operation_id: operationId, agent_id: agentId, interface_instance_id: instanceId });
         return;
       }
       const opKey = `${agentId}:${operationId}`;
@@ -362,6 +393,29 @@ const server = createServer(async (request, response) => {
       send(response, 200, statePayload(agentId));
       return;
     }
+    if (path === "/api/auth/login" && method === "POST") {
+      const body = await readJson(request);
+      const agentId = agentIdFromRequest(request, body);
+      await login.start(agentId);
+      send(response, 202, statePayload(agentId));
+      return;
+    }
+    if (path === "/api/auth/input" && method === "POST") {
+      const body = await readJson(request);
+      const value = typeof body.value === "string" ? body.value : "";
+      if (!value.trim()) {
+        send(response, 400, { error: "value is required" });
+        return;
+      }
+      login.submit(value);
+      send(response, 202, statePayload(agentIdFromRequest(request, body)));
+      return;
+    }
+    if (path === "/api/auth/cancel" && method === "POST") {
+      login.cancel();
+      send(response, 200, statePayload(agentIdFromRequest(request)));
+      return;
+    }
     if (path === "/api/agents/bind" && method === "POST") {
       const body = await readJson(request);
       const agentId = agentIdFromRequest(request, body);
@@ -379,6 +433,11 @@ const server = createServer(async (request, response) => {
       const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
       if (!prompt) {
         send(response, 400, { error: "prompt is required" });
+        return;
+      }
+      if (prompt === "/login") {
+        await login.start(agentId);
+        send(response, 202, statePayload(agentId));
         return;
       }
       const thread = await threadForRequest(agentId);
@@ -454,13 +513,20 @@ server.on("error", (error) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`codex-agent-ui listening on http://127.0.0.1:${port}`);
-  runtime.start().catch((error) => {
-    console.error("failed to start Codex app-server", error);
-  });
+  runtime.start()
+    .then(async () => {
+      if (runtime.snapshot().auth.status === "authenticated") {
+        await runtime.bindAgent(defaultAgentId());
+      }
+    })
+    .catch((error) => {
+      console.error("failed to start ACP agent", error);
+    });
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
+    login.cancel();
     void runtime.stop().finally(() => process.exit(0));
   });
 }

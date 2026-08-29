@@ -3,6 +3,8 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 AGENTS="${ACP_AGENT:-}"
 LIST_ONLY=
+INSTALL_MISSING=
+[ -n "$AGENTS" ] && INSTALL_MISSING=1
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -15,6 +17,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --agent)
+      INSTALL_MISSING=1
       if [ -n "$AGENTS" ]; then
         AGENTS="$AGENTS $2"
       else
@@ -23,6 +26,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --agents)
+      INSTALL_MISSING=1
       AGENTS=$(printf '%s' "$2" | tr ',+' ' ')
       shift 2
       ;;
@@ -42,7 +46,8 @@ if [ ! -f "$ROOT/treer-agent.json" ]; then
   exit 1
 fi
 
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+"$ROOT/scripts/map-host-harness-state.sh"
+export PATH="${HOME}/.grok/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin:${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --shell=bash)"
 fi
@@ -125,6 +130,24 @@ adapter_install() {
   esac
 }
 
+install_base() {
+  case "$1" in
+    grok)
+      npm install --prefix "${HOME}/.npm-global" -g @xai-official/grok@latest
+      ;;
+    cursor)
+      curl -fsSL https://cursor.com/install | sh
+      ;;
+    claude)
+      npm install --prefix "${HOME}/.npm-global" -g @anthropic-ai/claude-code@latest
+      ;;
+    codex)
+      npm install --prefix "${HOME}/.npm-global" -g @openai/codex@latest
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 profile_name() {
   case "$1" in
     grok) echo "ACP Grok" ;;
@@ -141,7 +164,16 @@ ensure_adapter() {
   server="$(server_command "$agent")"
   install="$(adapter_install "$agent")"
   if ! command -v "$base" >/dev/null 2>&1; then
-    echo "skipping $agent: base CLI '$base' is not on PATH" >&2
+    if [ "${INSTALL_MISSING:-}" = "1" ]; then
+      echo "installing base CLI for $agent"
+      install_base "$agent"
+    else
+      echo "skipping $agent: base CLI '$base' is not on PATH" >&2
+      return 1
+    fi
+  fi
+  if ! command -v "$base" >/dev/null 2>&1; then
+    echo "base CLI '$base' is still missing after install" >&2
     return 1
   fi
   if [ -n "$install" ] && ! command -v "$server" >/dev/null 2>&1; then
