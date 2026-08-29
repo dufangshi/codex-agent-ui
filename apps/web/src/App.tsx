@@ -20,7 +20,7 @@ import { api, connectEvents } from "./api";
 
 interface StatePayload {
   ready: boolean;
-  auth: AuthPayload;
+  auth?: AuthPayload;
   cwd?: string;
   root?: string;
   status: AgentRuntimeStatusDto;
@@ -154,12 +154,13 @@ export function App() {
   const [authInput, setAuthInput] = useState("");
 
   const applyState = useCallback((payload: StatePayload) => {
+    const displayName = payload.auth?.displayName ?? "ACP agent";
     setState(payload);
-    setError(payload.detail || payload.auth.status === "required"
+    setError(payload.detail || payload.auth?.status === "required"
       ? null
       : payload.ready
-        ? `${payload.auth.displayName} is starting…`
-        : `Connecting to ${payload.auth.displayName}…`);
+        ? `${displayName} is starting…`
+        : `Connecting to ${displayName}…`);
   }, []);
 
   useEffect(() => {
@@ -291,12 +292,12 @@ export function App() {
 
   const detail = state?.detail ?? null;
   const canInterrupt = detail?.thread.status === "running";
-  const showAuth = Boolean(state && (
+  const showAuth = Boolean(state?.auth && (
     state.auth.status === "required"
     || state.auth.login.status === "running"
     || state.auth.login.status === "failed"
   ));
-  const authPanel = state && showAuth ? (
+  const authPanel = state?.auth && showAuth ? (
     <AuthPanel
       auth={state.auth}
       input={authInput}
@@ -327,7 +328,7 @@ export function App() {
           emptyContent={
             authPanel ?? (
               <div className="flex flex-1 items-center justify-center px-6 py-12 text-center text-[var(--theme-fg-muted)]">
-                Starting {state?.auth.displayName ?? "ACP agent"}…
+                Starting {state?.auth?.displayName ?? "ACP agent"}…
               </div>
             )
           }
@@ -341,7 +342,7 @@ export function App() {
           }}
           composerProps={{
             disabled: busy || !detail,
-            toolboxItems: loginToolboxItems,
+            toolboxItems: state?.auth ? loginToolboxItems : [],
             settingsBusy,
             draftPrompt: draft,
             onDraftChange: (value) => {
